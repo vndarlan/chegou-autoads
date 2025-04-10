@@ -1,8 +1,12 @@
 import streamlit as st
 from streamlit.runtime.scriptrunner import RerunException, RerunData
-import os # Mantenha o import os
+import os
 
-# Função interna para forçar rerun (substitui st.experimental_rerun())
+# --- Configuração da Página ---
+# !!! MOVIDO PARA DENTRO DO if __name__ == "__main__": !!!
+# st.set_page_config(...) DEVE ESTAR LÁ
+
+# Função interna para forçar rerun
 def force_rerun():
     raise RerunException(RerunData(None))
 
@@ -12,8 +16,8 @@ USERS = {
     "operacional@grupochegou.com":  {"password": "gcopera2025",  "cargo": "Usuário"},
 }
 # --- AVISO DE SEGURANÇA ---
-st.sidebar.warning("⚠️ **Atenção:** O sistema de login atual NÃO é seguro para produção. As senhas estão visíveis no código. Considere usar bibliotecas como `streamlit-authenticator` para um login seguro.")
-# --- FIM AVISO ---
+# !!! MOVIDO PARA DENTRO DA FUNÇÃO main() !!!
+# st.sidebar.warning(...) ESTARÁ LÁ
 
 
 def login_page():
@@ -35,18 +39,33 @@ def login_page():
             st.error("Credenciais inválidas. Tente novamente.")
 
 def show_logout_button():
-    """Exibe um botão de logout na sidebar."""
-    st.sidebar.write(f"Logado como: {st.session_state.get('user_email', 'Usuário')}") # Mostra email logado
+    """Exibe informações do usuário e botão de logout na sidebar."""
+    # Mostra email logado se disponível
+    if "user_email" in st.session_state:
+        st.sidebar.write(f"Logado como: {st.session_state['user_email']}")
+    else:
+         st.sidebar.write(f"Logado como: {st.session_state.get('cargo', 'Usuário')}") # Fallback para cargo
+
+    # Botão Sair
     if st.sidebar.button("Sair", key="logout_button"):
-        # Limpa o estado da sessão
+        # Limpa o estado da sessão de forma segura
+        keys_to_keep = [] # Adicione chaves que você queira manter, se houver
         for key in list(st.session_state.keys()):
-            del st.session_state[key]
+            if key not in keys_to_keep:
+                del st.session_state[key]
         # Garante que logged_in seja False após limpar tudo
         st.session_state["logged_in"] = False
         st.session_state["cargo"] = None
         force_rerun()
 
 def main():
+    """Função principal que controla a lógica da aplicação."""
+
+    # --- AVISO DE SEGURANÇA ---
+    # Movido para cá, após st.set_page_config ter sido chamado
+    st.sidebar.warning("⚠️ **Atenção:** O sistema de login atual NÃO é seguro para produção. As senhas estão visíveis no código.")
+    # --- FIM AVISO ---
+
     # Inicializa variáveis de sessão se não existirem
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
@@ -65,7 +84,6 @@ def main():
     <style>
     section[data-testid="stSidebar"] {
         border-right: 1px solid #e0e0e0; /* Cinza claro */
-        /* width: 280px !important; /* Exemplo: Fixar largura da sidebar */
     }
     /* Ajuste opcional no padding do container principal */
     .main .block-container {
@@ -89,8 +107,7 @@ def main():
         st.sidebar.header("ChegouOperation")
         st.sidebar.markdown("---")
 
-        # Define páginas de acordo com o cargo (exemplo, ajuste conforme necessário)
-        # No seu código original, ambos tinham as mesmas páginas
+        # Define páginas de acordo com o cargo (ajuste conforme necessário)
         if st.session_state["cargo"] == "Administrador":
             pages = {
                 "Principal": [
@@ -98,14 +115,12 @@ def main():
                     st.Page("principal/tutorial.py", title="Tutoriais", icon=":material/video_library:"),
                 ],
                 "Facebook Ads": [
-                    st.Page("facebook/gerenciador.py",   title="Gerenciador",   icon=":material/manage_accounts:"), # Ícone diferente
-                    st.Page("facebook/subir_campanha.py",    title="Subir Campanha",    icon=":material/upload_file:"), # Ícone diferente
-                    st.Page("facebook/dashboard.py", title="Dashboard", icon=":material/dashboard:"), # Ícone diferente
-                    # st.Page("facebook/configuracoes.py", title="Configurações", icon=":material/settings:"), # Ícone diferente - REMOVIDO? Gerenciador tem config
+                    st.Page("facebook/gerenciador.py",   title="Gerenciador",   icon=":material/manage_accounts:"),
+                    st.Page("facebook/subir_campanha.py",    title="Subir Campanha",    icon=":material/upload_file:"),
+                    st.Page("facebook/dashboard.py", title="Dashboard", icon=":material/dashboard:"),
                 ],
-                # Adicione mais seções/páginas aqui se necessário
             }
-        else: # Usuário comum (pode ter menos acesso)
+        else: # Usuário comum
              pages = {
                 "Principal": [
                     st.Page("principal/home.py", title="Home", icon=":material/home:", default=True),
@@ -115,7 +130,6 @@ def main():
                     st.Page("facebook/gerenciador.py",   title="Gerenciador",   icon=":material/manage_accounts:"),
                     st.Page("facebook/subir_campanha.py",    title="Subir Campanha",    icon=":material/upload_file:"),
                     st.Page("facebook/dashboard.py", title="Dashboard", icon=":material/dashboard:"),
-                     # st.Page("facebook/configuracoes.py", title="Configurações", icon=":material/settings:"), # REMOVIDO?
                 ],
             }
 
@@ -126,12 +140,14 @@ def main():
         # Executa a página selecionada pelo usuário
         pg.run()
 
+# --- Ponto de Entrada Principal ---
 if __name__ == "__main__":
-    # Define configuração da página AQUI, no script principal
+    # --- st.set_page_config() COMO PRIMEIRO COMANDO STREAMLIT ---
     st.set_page_config(
         page_title="GC Operacional",
-        page_icon="📊", # Ou um emoji/URL de sua preferência
-        layout="centered", # Ou "wide" se preferir largura total por padrão
-        initial_sidebar_state="expanded" # Ou "collapsed"
+        page_icon="📊",
+        layout="centered", # Mantido como 'centered' conforme seu setup original
+        initial_sidebar_state="expanded"
     )
+    # Agora chama a função principal que contém o resto da lógica e o warning
     main()
