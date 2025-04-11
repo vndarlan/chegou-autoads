@@ -42,45 +42,193 @@ st.markdown("""
 # --- Funções do Banco de Dados (ADAPTADAS PARA POSTGRESQL) ---
 
 # Cache para conexão (evita reconectar a cada interação mínima, mas reconecta se der erro)
-@st.cache_resource(ttl=3600) # Cache por 1 hora
+@st.cache_resource(ttl=3600)
 def get_db_connection():
-    """Obtém uma conexão com o banco de dados PostgreSQL usando variáveis de ambiente."""
+    """Obtém uma conexão com o banco de dados."""
+    # Verificar variáveis de ambiente para PostgreSQL
+    pg_host = os.getenv("PGHOST")
+    pg_user = os.getenv("PGUSER")
+    pg_password = os.getenv("PGPASSWORD")
+    
+    # Usar SQLite como fallback se não houver configuração PostgreSQL
+    if not (pg_host and pg_user and pg_password):
+        try:
+            import sqlite3
+            # Criar pasta data se não existir
+            if not os.path.exists("data"):
+                os.makedirs("data")
+            # Retornar SQLite com uma tupla indicando o tipo
+            return (sqlite3.connect("data/gcoperacional.db", check_same_thread=False), "sqlite")
+        except Exception as e:
+            st.error(f"Erro ao conectar ao SQLite: {e}")
+            return None
+    
+    # Usar PostgreSQL se houver configuração
     try:
+        import psycopg2
         conn = psycopg2.connect(
-            host=os.getenv("PGHOST"),
+            host=pg_host,
             port=os.getenv("PGPORT"),
             database=os.getenv("PGDATABASE"),
-            user=os.getenv("PGUSER"),
-            password=os.getenv("PGPASSWORD")
+            user=pg_user,
+            password=pg_password
         )
-        return conn
-    except PgError as e:
-        st.error(f"Erro ao conectar ao PostgreSQL: {e}")
-        st.error("Verifique as variáveis de ambiente do banco de dados no Railway (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD).")
-        return None
+        return (conn, "postgres")
     except Exception as e:
-        st.error(f"Erro inesperado na conexão com o DB: {e}")
+        st.error(f"Erro ao conectar ao PostgreSQL: {e}")
         return None
 
-def close_connection(conn):
-    """Fecha a conexão com o banco de dados se estiver aberta."""
-    if conn is not None and not conn.closed:
+def close_connection(conn_info):
+    """Fecha a conexão com o banco de dados."""
+    if conn_info is None:
+        return
+    
+    conn, conn_type = conn_info
+    if conn is not None:
         try:
             conn.close()
-        except PgError as e:
-            print(f"Erro ao fechar conexão PostgreSQL: {e}") # Log no console
+        except Exception as e:
+            print(f"Erro ao fechar conexão: {e}")
+
+def execute_query(query, params=None, fetch_one=False, fetch_all=False, is_dml=False):
+    """Executa uma query no banco de dados com melhor tratamento de erros."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return None
+    
+    conn, conn_type = conn_info
+    result = None
+    cursor = None
+    
+    try:
+        # Verificar e reconectar se necessário
+        if conn_type == "postgres" and conn.closed:
+            get_db_connection.clear()
+            conn_info = get_db_connection()
+            if conn_info is None:
+                return None
+            conn, conn_type = conn_info
+        
+        cursor = conn.cursor()
+        
+        # Adaptar placeholders conforme o tipo de banco
+        adapted_query = query
+        if params is not None:
+            if conn_type == "sqlite" and "%s" in query:
+                # Converter placeholders %s para ? no SQLite
+                adapted_query = query.replace("%s", "?")
+            elif conn_type == "postgres" and "?" in query:
+                # Converter placeholders ? para %s no PostgreSQL
+                adapted_query = query.replace("?", "%s")
+            
+            cursor.execute(adapted_query, params)
+        else:
+            cursor.execute(adapted_query)
+        
+        if is_dml:  # Data Manipulation Language (INSERT, UPDATE, DELETE)
+            conn.commit()
+            result = cursor.rowcount
+        elif fetch_one:
+            result = cursor.fetchone()
+        elif fetch_all:
+            result = cursor.fetchall()
+        
+        if not is_dml:
+            conn.commit()
+    
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        print(f"Erro na query: {e}\nQuery: {query}\nParams: {params}")
+        st.error(f"Erro na operação do banco de dados")
+        result = None
+    
+    finally:
+        if cursor:
+            cursor.close()
+    
+    return result
 
 def init_db():
-    """Inicializa o banco de dados PostgreSQL, criando tabelas se não existirem."""
-    conn = get_db_connection()
-    if conn is None:
+    """Inicializa o banco de dados."""
+    conn_info = get_db_connection()
+    if conn_info is None:
         st.error("Não foi possível inicializar o banco de dados: Falha na conexão.")
         return
-
+    
+    conn, conn_type = conn_info
+    cursor = None
+    
     try:
-        with conn.cursor() as cur:
-            # Tabela de configurações da API (Sintaxe PostgreSQL)
-            cur.execute('''
+        cursor = conn.cursor()
+        
+        # Criar tabelas com a sintaxe apropriada para o tipo de DB
+        if conn_type == "sqlite":
+            # Tabela api_config
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS api_config (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    app_id TEXT NOT NULL,
+                    app_secret TEXT NOT NULL,
+                    access_token TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    business_id TEXT,
+                    page_id TEXT,
+                    is_active INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    token_expires_at DATE
+                )
+            ''')
+            
+            # Verificar coluna token_expires_at
+            cursor.execute("PRAGMA table_info(api_config)")
+            columns = [info[1] for info in cursor.fetchall()]
+            if 'token_expires_at' not in columns:
+                cursor.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
+            
+            # Tabela rules
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    condition_type TEXT NOT NULL,
+                    is_composite INTEGER DEFAULT 0,
+                    primary_metric TEXT NOT NULL,
+                    primary_operator TEXT NOT NULL,
+                    primary_value REAL NOT NULL,
+                    secondary_metric TEXT,
+                    secondary_operator TEXT,
+                    secondary_value REAL,
+                    join_operator TEXT DEFAULT 'AND',
+                    action_type TEXT NOT NULL,
+                    action_value REAL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabela rule_executions
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rule_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_id INTEGER NOT NULL,
+                    ad_object_id TEXT NOT NULL,
+                    ad_object_type TEXT NOT NULL,
+                    ad_object_name TEXT NOT NULL,
+                    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    was_successful INTEGER DEFAULT 0,
+                    message TEXT,
+                    FOREIGN KEY (rule_id) REFERENCES rules (id) ON DELETE CASCADE
+                )
+            ''')
+        else:
+            # PostgreSQL original
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS api_config (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -92,32 +240,25 @@ def init_db():
                     page_id TEXT,
                     is_active INTEGER DEFAULT 0,
                     last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    token_expires_at DATE -- Usar DATE para YYYY-MM-DD
+                    token_expires_at DATE
                 )
             ''')
-
-            # Verifica se a coluna 'token_expires_at' existe (Método PostgreSQL)
-            cur.execute("""
+            
+            cursor.execute("""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = 'api_config' AND column_name = 'token_expires_at';
             """)
-            column_exists = cur.fetchone()
-
+            column_exists = cursor.fetchone()
             if not column_exists:
                 try:
-                    cur.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
-                    conn.commit() # Commit alteração da tabela
-                    # st.info("Coluna 'token_expires_at' adicionada à tabela 'api_config'.")
-                except PgError as e_alter:
-                     conn.rollback() # Desfaz se der erro
-                     # Evita erro se a coluna foi criada em outra execução simultânea
-                     if "already exists" not in str(e_alter):
-                          st.warning(f"Não foi possível adicionar a coluna 'token_expires_at': {e_alter}")
-
-
-            # Tabela de regras (Sintaxe PostgreSQL)
-            cur.execute('''
+                    cursor.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
+                except Exception as e_alter:
+                    conn.rollback()
+                    if "already exists" not in str(e_alter):
+                        print(f"Erro ao adicionar coluna: {e_alter}")
+            
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rules (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -126,7 +267,7 @@ def init_db():
                     is_composite INTEGER DEFAULT 0,
                     primary_metric TEXT NOT NULL,
                     primary_operator TEXT NOT NULL,
-                    primary_value REAL NOT NULL, -- REAL é um tipo float no PG
+                    primary_value REAL NOT NULL,
                     secondary_metric TEXT,
                     secondary_operator TEXT,
                     secondary_value REAL,
@@ -138,11 +279,11 @@ def init_db():
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # Tabela de execuções de regras (Sintaxe PostgreSQL)
-            cur.execute('''
+            
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rule_executions (
                     id SERIAL PRIMARY KEY,
-                    rule_id INTEGER NOT NULL, -- Referencia rules(id)
+                    rule_id INTEGER NOT NULL,
                     ad_object_id TEXT NOT NULL,
                     ad_object_type TEXT NOT NULL,
                     ad_object_name TEXT NOT NULL,
@@ -152,86 +293,79 @@ def init_db():
                     FOREIGN KEY (rule_id) REFERENCES rules (id) ON DELETE CASCADE
                 )
             ''')
-            conn.commit() # Commit criação das tabelas
-    except PgError as e:
-        conn.rollback() # Desfaz transação em caso de erro
-        st.error(f"Erro ao criar/verificar tabelas no PostgreSQL: {e}")
+        
+        conn.commit()
     except Exception as e:
-        conn.rollback()
-        st.error(f"Erro inesperado em init_db: {e}")
-    # Não fechamos a conexão aqui, pois ela é gerenciada pelo cache_resource
-
-def execute_query(query, params=None, fetch_one=False, fetch_all=False, is_dml=False):
-    """Executa uma query no PostgreSQL, gerenciando conexão e cursor."""
-    conn = get_db_connection()
-    if conn is None:
-        return None # Retorna None se a conexão falhar
-
-    result = None
-    try:
-        # Verifica se a conexão está ativa, se não, tenta reconectar
-        if conn.closed:
-            print("Conexão DB fechada, limpando cache e tentando reconectar...")
-            get_db_connection.clear() # Limpa o cache da conexão
-            conn = get_db_connection()
-            if conn is None or conn.closed:
-                 st.error("Falha ao reconectar ao banco de dados.")
-                 return None
-
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            if is_dml: # INSERT, UPDATE, DELETE
-                conn.commit()
-                result = cur.rowcount # Retorna número de linhas afetadas
-            elif fetch_one:
-                result = cur.fetchone()
-            elif fetch_all:
-                result = cur.fetchall()
-            # Se não for DML nem fetch, apenas executa (ex: CREATE TABLE)
-            if not is_dml:
-                 conn.commit() # Commit DDL statements like CREATE, ALTER
-
-    except PgError as e:
-        conn.rollback() # Desfaz em caso de erro
-        st.error(f"Erro na query PostgreSQL: {e}\nQuery: {query}\nParams: {params}")
-        # Limpa o cache da conexão se houver erro, pode ser um problema de conexão
-        get_db_connection.clear()
-        result = None # Garante que retorne None em caso de erro
-    except Exception as e:
-        conn.rollback()
-        st.error(f"Erro inesperado ao executar query: {e}")
-        result = None
-    # Não fecha a conexão aqui, deixa o cache_resource gerenciar
-
-    return result
-
+        try:
+            conn.rollback()
+        except:
+            pass
+        st.error(f"Erro ao criar tabelas: {e}")
+    finally:
+        if cursor:
+            cursor.close()
 
 def save_api_config(name, app_id, app_secret, access_token, account_id, business_id="", page_id="", token_expires_at=None):
-    """Salva a configuração da API no PostgreSQL."""
+    """Salva a configuração da API no banco de dados."""
     # Verifica quantas configs existem para definir is_active
-    count_query = "SELECT COUNT(*) FROM api_config"
-    count_result = execute_query(count_query, fetch_one=True)
-    count = count_result[0] if count_result else 0
-    is_active = 1 if count == 0 else 0
-
-    # Formata a data para objeto date ou None
-    expires_at_date = token_expires_at if isinstance(token_expires_at, date) else None
-
-    insert_query = """
-        INSERT INTO api_config
-        (name, app_id, app_secret, access_token, account_id,
-         business_id, page_id, is_active, token_expires_at, last_updated)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-    """
-    params = (
-        name, app_id, app_secret, access_token, account_id,
-        business_id if business_id else None, # Garante None se vazio
-        page_id if page_id else None,       # Garante None se vazio
-        is_active,
-        expires_at_date # Passa o objeto date ou None
-    )
-    rowcount = execute_query(insert_query, params, is_dml=True)
-    return rowcount is not None and rowcount > 0 # Sucesso se afetou linhas
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return False
+    
+    conn, conn_type = conn_info
+    cursor = None
+    
+    try:
+        cursor = conn.cursor()
+        # Contar configs existentes
+        cursor.execute("SELECT COUNT(*) FROM api_config")
+        count_result = cursor.fetchone()
+        count = count_result[0] if count_result else 0
+        is_active = 1 if count == 0 else 0
+        
+        # Formata a data para objeto date ou None
+        expires_at_date = token_expires_at if isinstance(token_expires_at, date) else None
+        
+        # Ajustar query conforme tipo de banco
+        if conn_type == "sqlite":
+            insert_query = """
+                INSERT INTO api_config
+                (name, app_id, app_secret, access_token, account_id,
+                 business_id, page_id, is_active, token_expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        else:  # PostgreSQL
+            insert_query = """
+                INSERT INTO api_config
+                (name, app_id, app_secret, access_token, account_id,
+                 business_id, page_id, is_active, token_expires_at, last_updated)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            """
+        
+        params = (
+            name, app_id, app_secret, access_token, account_id,
+            business_id if business_id else None,
+            page_id if page_id else None,
+            is_active,
+            expires_at_date
+        )
+        
+        cursor.execute(insert_query, params)
+        conn.commit()
+        return True
+        
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        print(f"Erro ao salvar config: {e}")
+        return False
+        
+    finally:
+        if cursor:
+            cursor.close()
 
 def get_active_api_config():
     """Obtém a configuração ativa do PostgreSQL."""
@@ -289,36 +423,59 @@ def set_active_api_config(config_id):
 
 
 def delete_api_config(config_id):
-    """Exclui uma configuração do PostgreSQL."""
-    conn = get_db_connection()
-    if conn is None: return False
+    """Exclui uma configuração do banco de dados."""
+    conn_info = get_db_connection()
+    if conn_info is None: 
+        return False
+    
+    conn, conn_type = conn_info
     success = False
+    cursor = None
+    
     try:
-        with conn.cursor() as cur:
-            # Verifica se a que será excluída é a ativa
-            cur.execute("SELECT is_active FROM api_config WHERE id = %s", (config_id,))
-            row = cur.fetchone()
-            is_active_to_delete = row and row[0] == 1
+        cursor = conn.cursor()
+        
+        # Verifica se a que será excluída é a ativa
+        if conn_type == "sqlite":
+            cursor.execute("SELECT is_active FROM api_config WHERE id = ?", (config_id,))
+        else:
+            cursor.execute("SELECT is_active FROM api_config WHERE id = %s", (config_id,))
+            
+        row = cursor.fetchone()
+        is_active_to_delete = row and row[0] == 1
 
-            # Exclui a configuração
-            cur.execute("DELETE FROM api_config WHERE id = %s", (config_id,))
-            deleted_count = cur.rowcount
+        # Exclui a configuração
+        if conn_type == "sqlite":
+            cursor.execute("DELETE FROM api_config WHERE id = ?", (config_id,))
+        else:
+            cursor.execute("DELETE FROM api_config WHERE id = %s", (config_id,))
+            
+        deleted_count = cursor.rowcount
 
-            # Se excluiu a ativa, tenta ativar outra
-            if deleted_count > 0 and is_active_to_delete:
-                cur.execute("SELECT id FROM api_config ORDER BY id LIMIT 1")
-                other_config = cur.fetchone()
-                if other_config:
-                    cur.execute("UPDATE api_config SET is_active = 1 WHERE id = %s", (other_config[0],))
+        # Se excluiu a ativa, tenta ativar outra
+        if deleted_count > 0 and is_active_to_delete:
+            cursor.execute("SELECT id FROM api_config ORDER BY id LIMIT 1")
+            other_config = cursor.fetchone()
+            if other_config:
+                if conn_type == "sqlite":
+                    cursor.execute("UPDATE api_config SET is_active = 1 WHERE id = ?", (other_config[0],))
+                else:
+                    cursor.execute("UPDATE api_config SET is_active = 1 WHERE id = %s", (other_config[0],))
 
-            conn.commit()
-            success = deleted_count > 0
-    except PgError as e:
-        conn.rollback()
-        st.error(f"Erro ao excluir configuração: {e}")
+        conn.commit()
+        success = deleted_count > 0
+        
     except Exception as e:
-        conn.rollback()
-        st.error(f"Erro inesperado em delete_api_config: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
+        st.error(f"Erro ao excluir configuração: {e}")
+        success = False
+        
+    finally:
+        if cursor:
+            cursor.close()
 
     return success
 
@@ -514,112 +671,355 @@ def get_facebook_campaigns_cached(account_id_from_main):
 def add_rule(name, description, primary_metric, primary_operator,
              primary_value, action_type, action_value, is_composite=0, secondary_metric=None,
              secondary_operator=None, secondary_value=None, join_operator="AND"):
-    """Adiciona uma nova regra ao PostgreSQL."""
-    query = """
-        INSERT INTO rules
-        (name, description, condition_type, is_composite, primary_metric,
-         primary_operator, primary_value, secondary_metric, secondary_operator,
-         secondary_value, join_operator, action_type, action_value, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-    """
-    params = (
-        name, description, "custom", is_composite, primary_metric,
-        primary_operator, primary_value, secondary_metric, secondary_operator,
-        secondary_value, join_operator, action_type, action_value
-    )
-    rowcount = execute_query(query, params, is_dml=True)
-    if rowcount is not None and rowcount > 0:
-        get_all_rules_cached.clear() # Limpa cache
-        return True
-    return False
+    """Adiciona uma nova regra ao banco de dados."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return False
+    
+    conn, conn_type = conn_info
+    cursor = None
+    success = False
+    
+    try:
+        cursor = conn.cursor()
+        
+        # SQLite e PostgreSQL têm sintaxes diferentes para placeholders
+        if conn_type == "sqlite":
+            query = """
+                INSERT INTO rules
+                (name, description, condition_type, is_composite, primary_metric,
+                 primary_operator, primary_value, secondary_metric, secondary_operator,
+                 secondary_value, join_operator, action_type, action_value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """
+        else:
+            query = """
+                INSERT INTO rules
+                (name, description, condition_type, is_composite, primary_metric,
+                 primary_operator, primary_value, secondary_metric, secondary_operator,
+                 secondary_value, join_operator, action_type, action_value, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            """
+            
+        params = (
+            name, description, "custom", is_composite, primary_metric,
+            primary_operator, primary_value, secondary_metric, secondary_operator,
+            secondary_value, join_operator, action_type, action_value
+        )
+        
+        cursor.execute(query, params)
+        conn.commit()
+        get_all_rules_cached.clear()
+        success = True
+        
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        print(f"Erro ao adicionar regra: {e}")
+        success = False
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
+    return success
 
 @st.cache_data(ttl=60)
 def get_all_rules_cached():
-    """Busca todas as regras do PostgreSQL (cacheado)."""
-    query = """
-        SELECT id, name, description, condition_type, is_composite,
-               primary_metric, primary_operator, primary_value,
-               secondary_metric, secondary_operator, secondary_value,
-               join_operator, action_type, action_value, is_active,
-               created_at, updated_at
-        FROM rules
-        ORDER BY created_at DESC
-    """
-    rows = execute_query(query, fetch_all=True)
+    """Busca todas as regras do banco de dados (cacheado)."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return []
+    
+    conn, conn_type = conn_info
     rules_list = []
-    if rows:
-        # Nomes das colunas na ordem do SELECT
-        columns = ["id", "name", "description", "condition_type", "is_composite",
-                   "primary_metric", "primary_operator", "primary_value",
-                   "secondary_metric", "secondary_operator", "secondary_value",
-                   "join_operator", "action_type", "action_value", "is_active",
-                   "created_at", "updated_at"]
-        for row in rows:
-            rules_list.append(dict(zip(columns, row)))
+    cursor = None
+    
+    try:
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT id, name, description, condition_type, is_composite,
+                   primary_metric, primary_operator, primary_value,
+                   secondary_metric, secondary_operator, secondary_value,
+                   join_operator, action_type, action_value, is_active,
+                   created_at, updated_at
+            FROM rules
+            ORDER BY created_at DESC
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        if rows:
+            columns = ["id", "name", "description", "condition_type", "is_composite",
+                       "primary_metric", "primary_operator", "primary_value",
+                       "secondary_metric", "secondary_operator", "secondary_value",
+                       "join_operator", "action_type", "action_value", "is_active",
+                       "created_at", "updated_at"]
+            for row in rows:
+                rules_list.append(dict(zip(columns, row)))
+    
+    except Exception as e:
+        print(f"Erro ao buscar regras: {e}")
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
     return rules_list
 
+@st.cache_data(ttl=60)
+def get_rule_executions_cached(limit=20):
+    """Busca as últimas execuções de regras (cacheado)."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return []
+    
+    conn, conn_type = conn_info
+    executions_list = []
+    cursor = None
+    
+    try:
+        cursor = conn.cursor()
+        
+        if conn_type == "sqlite":
+            query = """
+                SELECT re.id, r.name as rule_name, re.rule_id, re.ad_object_id, re.ad_object_type,
+                       re.ad_object_name, re.executed_at, re.was_successful, re.message
+                FROM rule_executions re
+                LEFT JOIN rules r ON re.rule_id = r.id
+                ORDER BY re.executed_at DESC
+                LIMIT ?
+            """
+            cursor.execute(query, (limit,))
+        else:
+            query = """
+                SELECT re.id, r.name as rule_name, re.rule_id, re.ad_object_id, re.ad_object_type,
+                       re.ad_object_name, re.executed_at, re.was_successful, re.message
+                FROM rule_executions re
+                LEFT JOIN rules r ON re.rule_id = r.id
+                ORDER BY re.executed_at DESC
+                LIMIT %s
+            """
+            cursor.execute(query, (limit,))
+            
+        rows = cursor.fetchall()
+        
+        if rows:
+            columns = ["id", "rule_name", "rule_id", "ad_object_id", "ad_object_type",
+                       "ad_object_name", "executed_at", "was_successful", "message"]
+            for row in rows:
+                execution_dict = dict(zip(columns, row))
+                if execution_dict.get("rule_name") is None and execution_dict.get("rule_id"):
+                    execution_dict["rule_name"] = f"Regra ID {execution_dict['rule_id']} (Excluída)"
+                elif execution_dict.get("rule_name") is None:
+                    execution_dict["rule_name"] = "Regra Desconhecida"
+                executions_list.append(execution_dict)
+                
+    except Exception as e:
+        print(f"Erro ao buscar execuções: {e}")
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
+    return executions_list
+
 def delete_rule(rule_id):
-    """Exclui uma regra do PostgreSQL."""
-    query = "DELETE FROM rules WHERE id = %s"
-    params = (rule_id,)
-    rowcount = execute_query(query, params, is_dml=True)
-    if rowcount is not None and rowcount > 0:
-        get_all_rules_cached.clear() # Limpa cache
-        return True
-    return False
+    """Exclui uma regra do banco de dados."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return False
+    
+    conn, conn_type = conn_info
+    cursor = None
+    success = False
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Adapta a sintaxe conforme o tipo de banco
+        if conn_type == "sqlite":
+            query = "DELETE FROM rules WHERE id = ?"
+        else:
+            query = "DELETE FROM rules WHERE id = %s"
+            
+        params = (rule_id,)
+        cursor.execute(query, params)
+        conn.commit()
+        
+        # Verifica se alguma linha foi afetada
+        success = cursor.rowcount > 0
+        
+        if success:
+            get_all_rules_cached.clear()  # Limpa cache
+        
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        print(f"Erro ao excluir regra ID {rule_id}: {e}")
+        st.error(f"Erro ao excluir regra: {str(e)[:100]}")
+        success = False
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
+    return success
+
 
 def toggle_rule_status(rule_id, is_active):
-    """Ativa ou desativa uma regra no PostgreSQL."""
-    query = "UPDATE rules SET is_active = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s"
-    params = (1 if is_active else 0, rule_id)
-    rowcount = execute_query(query, params, is_dml=True)
-    if rowcount is not None and rowcount > 0:
-        get_all_rules_cached.clear() # Limpa cache
-        return True
-    return False
+    """Ativa ou desativa uma regra no banco de dados."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return False
+    
+    conn, conn_type = conn_info
+    cursor = None
+    success = False
+    
+    try:
+        cursor = conn.cursor()
+        
+        if conn_type == "sqlite":
+            query = "UPDATE rules SET is_active = ?, updated_at = datetime('now') WHERE id = ?"
+            params = (1 if is_active else 0, rule_id)
+        else:
+            query = "UPDATE rules SET is_active = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s"
+            params = (1 if is_active else 0, rule_id)
+            
+        cursor.execute(query, params)
+        conn.commit()
+        get_all_rules_cached.clear()
+        success = cursor.rowcount > 0
+        
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        print(f"Erro ao alterar status da regra: {e}")
+        success = False
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
+    return success
 
 def log_rule_execution(rule_id, ad_object_id, ad_object_type, ad_object_name, was_successful, message=""):
-    """Registra a execução de uma regra no PostgreSQL."""
-    query = """
-        INSERT INTO rule_executions
-        (rule_id, ad_object_id, ad_object_type, ad_object_name, was_successful, message)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """
-    params = (rule_id, ad_object_id, ad_object_type, ad_object_name, 1 if was_successful else 0, message)
-    rowcount = execute_query(query, params, is_dml=True)
-    if rowcount is not None and rowcount > 0:
-        get_rule_executions_cached.clear() # Limpa cache
-        return True
-    else:
-        # Log no console se falhar ao inserir no log
-        print(f"Falha ao registrar execução da regra no DB: rule_id={rule_id}, object_id={ad_object_id}")
+    """Registra a execução de uma regra no banco de dados."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        print(f"Falha ao registrar execução: conexão nula")
         return False
+    
+    conn, conn_type = conn_info
+    cursor = None
+    success = False
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Query adaptada por tipo de banco
+        if conn_type == "sqlite":
+            query = """
+                INSERT INTO rule_executions
+                (rule_id, ad_object_id, ad_object_type, ad_object_name, was_successful, message)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """
+        else:
+            query = """
+                INSERT INTO rule_executions
+                (rule_id, ad_object_id, ad_object_type, ad_object_name, was_successful, message)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            
+        params = (rule_id, ad_object_id, ad_object_type, ad_object_name, 1 if was_successful else 0, message)
+        cursor.execute(query, params)
+        conn.commit()
+        
+        # Limpa cache após inserção bem-sucedida
+        get_rule_executions_cached.clear()
+        success = True
+        
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        print(f"Erro ao registrar execução no DB: {e}")
+        success = False
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
+    return success
 
 
 @st.cache_data(ttl=60)
 def get_rule_executions_cached(limit=20):
-    """Busca as últimas execuções de regras do PostgreSQL (cacheado)."""
-    query = """
-        SELECT re.id, r.name as rule_name, re.rule_id, re.ad_object_id, re.ad_object_type,
-               re.ad_object_name, re.executed_at, re.was_successful, re.message
-        FROM rule_executions re
-        LEFT JOIN rules r ON re.rule_id = r.id
-        ORDER BY re.executed_at DESC
-        LIMIT %s
-    """
-    params = (limit,)
-    rows = execute_query(query, params, fetch_all=True)
+    """Busca as últimas execuções de regras (cacheado)."""
+    conn_info = get_db_connection()
+    if conn_info is None:
+        return []
+    
+    conn, conn_type = conn_info
     executions_list = []
-    if rows:
-        columns = ["id", "rule_name", "rule_id", "ad_object_id", "ad_object_type",
-                   "ad_object_name", "executed_at", "was_successful", "message"]
-        for row in rows:
-            execution_dict = dict(zip(columns, row))
-            if execution_dict.get("rule_name") is None and execution_dict.get("rule_id"):
-                execution_dict["rule_name"] = f"Regra ID {execution_dict['rule_id']} (Excluída)"
-            elif execution_dict.get("rule_name") is None:
-                 execution_dict["rule_name"] = "Regra Desconhecida"
-            executions_list.append(execution_dict)
+    cursor = None
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Query adaptada por tipo de banco
+        if conn_type == "sqlite":
+            query = """
+                SELECT re.id, r.name as rule_name, re.rule_id, re.ad_object_id, re.ad_object_type,
+                       re.ad_object_name, re.executed_at, re.was_successful, re.message
+                FROM rule_executions re
+                LEFT JOIN rules r ON re.rule_id = r.id
+                ORDER BY re.executed_at DESC
+                LIMIT ?
+            """
+            cursor.execute(query, (limit,))
+        else:
+            query = """
+                SELECT re.id, r.name as rule_name, re.rule_id, re.ad_object_id, re.ad_object_type,
+                       re.ad_object_name, re.executed_at, re.was_successful, re.message
+                FROM rule_executions re
+                LEFT JOIN rules r ON re.rule_id = r.id
+                ORDER BY re.executed_at DESC
+                LIMIT %s
+            """
+            cursor.execute(query, (limit,))
+            
+        rows = cursor.fetchall()
+        
+        if rows:
+            columns = ["id", "rule_name", "rule_id", "ad_object_id", "ad_object_type",
+                       "ad_object_name", "executed_at", "was_successful", "message"]
+            for row in rows:
+                execution_dict = dict(zip(columns, row))
+                if execution_dict.get("rule_name") is None and execution_dict.get("rule_id"):
+                    execution_dict["rule_name"] = f"Regra ID {execution_dict['rule_id']} (Excluída)"
+                elif execution_dict.get("rule_name") is None:
+                    execution_dict["rule_name"] = "Regra Desconhecida"
+                executions_list.append(execution_dict)
+                
+    except Exception as e:
+        print(f"Erro ao buscar execuções: {e}")
+        # Não mostra erro na tela para evitar poluição visual
+        
+    finally:
+        if cursor:
+            cursor.close()
+            
     return executions_list
 
 
@@ -876,13 +1276,42 @@ def show_rule_form():
         "custom_budget_multiplier": "Multiplicar orçamento por valor"
     }
 
-    if 'rule_form_is_composite' not in st.session_state: st.session_state.rule_form_is_composite = False
-    if 'rule_form_primary_metric' not in st.session_state: st.session_state.rule_form_primary_metric = 'cpa'
-    if 'rule_form_secondary_metric' not in st.session_state: st.session_state.rule_form_secondary_metric = 'purchases'
-    if 'rule_form_action_type' not in st.session_state: st.session_state.rule_form_action_type = 'pause_campaign'
+    # Inicializa variáveis de sessão
+    if 'rule_form_is_composite' not in st.session_state: 
+        st.session_state.rule_form_is_composite = False
+    if 'rule_form_primary_metric' not in st.session_state: 
+        st.session_state.rule_form_primary_metric = 'cpa'
+    if 'rule_form_secondary_metric' not in st.session_state: 
+        st.session_state.rule_form_secondary_metric = 'purchases'
+    if 'rule_form_action_type' not in st.session_state: 
+        st.session_state.rule_form_action_type = 'pause_campaign'
 
-    is_composite = st.checkbox("Usar duas condições (regra composta)", key='rule_form_is_composite', value=st.session_state.rule_form_is_composite)
-    st.session_state.rule_form_is_composite = is_composite
+    is_composite = st.checkbox("Usar duas condições (regra composta)", key='rule_form_is_composite')
+
+    # Seleção de métricas FORA do formulário para permitir rerun imediato
+    st.markdown("##### Selecione as Métricas")
+    
+    col1_m, col2_m = st.columns(2)
+    with col1_m:
+        st.markdown("**1ª Condição:**")
+        # Usar session_state como chave para manter o valor selecionado
+        primary_metric = st.selectbox("Métrica Primária", 
+                                     options=list(METRIC_OPTIONS.keys()), 
+                                     format_func=lambda x: METRIC_OPTIONS[x],
+                                     key='rule_form_primary_metric')
+    
+    # Inicializar secondary_metric com valor padrão
+    secondary_metric = st.session_state.rule_form_secondary_metric
+    
+    with col2_m:
+        if is_composite:
+            st.markdown("**2ª Condição:**")
+            secondary_metric = st.selectbox("Métrica Secundária", 
+                                          options=list(METRIC_OPTIONS.keys()),
+                                          format_func=lambda x: METRIC_OPTIONS[x],
+                                          key='rule_form_secondary_metric')
+        else:
+            st.markdown("") # Espaço vazio para manter alinhamento
 
     join_operator = "AND"
     if is_composite:
@@ -892,6 +1321,13 @@ def show_rule_form():
             key="rule_form_join_operator"
         )
 
+    # Determinar os tipos de métrica fora do formulário
+    is_float_primary = primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+    is_float_secondary = False
+    if is_composite:
+        is_float_secondary = secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+
+    # Agora o formulário sem seleção de métricas
     with st.form("new_rule_form"):
         name = st.text_input("Nome da Regra*", key="rule_form_name")
         description = st.text_area("Descrição (Opcional)", height=80, key="rule_form_description")
@@ -899,51 +1335,92 @@ def show_rule_form():
         st.markdown("---")
         st.markdown("##### Condições")
 
-        st.markdown("**1ª Condição:**")
-        col1_p, col2_p, col3_p = st.columns([2, 1, 2])
+        # Exibe a métrica selecionada no formulário (sem seleção)
+        st.markdown(f"**1ª Condição: {METRIC_OPTIONS[primary_metric]}**")
+        col1_p, col2_p = st.columns([1, 2])
+        
         with col1_p:
-            primary_metric = st.selectbox("Métrica", options=list(METRIC_OPTIONS.keys()), format_func=lambda x: METRIC_OPTIONS[x], key='rule_form_primary_metric')
+            primary_operator = st.selectbox("Operador", 
+                                           options=list(OPERATOR_OPTIONS.keys()), 
+                                           format_func=lambda x: OPERATOR_OPTIONS[x], 
+                                           key="rule_form_primary_operator")
         with col2_p:
-            primary_operator = st.selectbox("Operador", options=list(OPERATOR_OPTIONS.keys()), format_func=lambda x: OPERATOR_OPTIONS[x], key="rule_form_primary_operator")
-        with col3_p:
-            is_float_metric_p = primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
-            step_val_p = 0.01 if is_float_metric_p else 1
-            format_str_p = "%.2f" if is_float_metric_p else "%d"
-            min_val_p = 0.0 if primary_metric != 'roas' else None
-            primary_value = st.number_input("Valor*", min_value=min_val_p, step=step_val_p, format=format_str_p, key="rule_form_primary_value", value=0.0 if is_float_metric_p else 0) # Default value
+            # Usar is_float_primary para determinar o tipo de campo
+            if is_float_primary:
+                label = "Valor (R$)*" if primary_metric in ['cpa', 'cpc', 'spend'] else "Valor*"
+                primary_value = st.number_input(
+                    label,
+                    min_value=0.0 if primary_metric != 'roas' else None,
+                    step=0.01, 
+                    format="%.2f", 
+                    key=f"rule_form_primary_value_float_{primary_metric}"
+                )
+            else:
+                primary_value = st.number_input(
+                    "Quantidade*", 
+                    min_value=0,
+                    step=1, 
+                    format="%d", 
+                    key=f"rule_form_primary_value_int_{primary_metric}"
+                )
 
-        secondary_metric, secondary_operator, secondary_value = None, None, None
+        secondary_operator = None
+        secondary_value = None
+        
         if is_composite:
-            st.markdown("**2ª Condição:**")
-            col1_s, col2_s, col3_s = st.columns([2, 1, 2])
+            st.markdown(f"**2ª Condição: {METRIC_OPTIONS[secondary_metric]}**")
+            col1_s, col2_s = st.columns([1, 2])
+            
             with col1_s:
-                secondary_metric = st.selectbox("Métrica", options=list(METRIC_OPTIONS.keys()), format_func=lambda x: METRIC_OPTIONS[x], key='rule_form_secondary_metric')
+                secondary_operator = st.selectbox("Operador", 
+                                                options=list(OPERATOR_OPTIONS.keys()), 
+                                                format_func=lambda x: OPERATOR_OPTIONS[x], 
+                                                key="rule_form_secondary_operator")
             with col2_s:
-                secondary_operator = st.selectbox("Operador", options=list(OPERATOR_OPTIONS.keys()), format_func=lambda x: OPERATOR_OPTIONS[x], key="rule_form_secondary_operator")
-            with col3_s:
-                is_float_metric_s = secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
-                step_val_s = 0.01 if is_float_metric_s else 1
-                format_str_s = "%.2f" if is_float_metric_s else "%d"
-                min_val_s = 0.0 if secondary_metric != 'roas' else None
-                secondary_value = st.number_input("Valor*", min_value=min_val_s, step=step_val_s, format=format_str_s, key="rule_form_secondary_value", value=0.0 if is_float_metric_s else 0) # Default value
+                # Usar is_float_secondary para determinar o tipo de campo
+                if is_float_secondary:
+                    label = "Valor (R$)*" if secondary_metric in ['cpa', 'cpc', 'spend'] else "Valor*"
+                    secondary_value = st.number_input(
+                        label,
+                        min_value=0.0 if secondary_metric != 'roas' else None,
+                        step=0.01, 
+                        format="%.2f", 
+                        key=f"rule_form_secondary_value_float_{secondary_metric}"
+                    )
+                else:
+                    secondary_value = st.number_input(
+                        "Quantidade*", 
+                        min_value=0,
+                        step=1, 
+                        format="%d", 
+                        key=f"rule_form_secondary_value_int_{secondary_metric}"
+                    )
 
         st.markdown("---")
         st.markdown("##### Ação a Executar")
         col1_a, col2_a = st.columns(2)
         with col1_a:
-            action_type = st.selectbox("Tipo de Ação*", options=list(ACTION_OPTIONS.keys()), format_func=lambda x: ACTION_OPTIONS[x], key='rule_form_action_type')
+            action_type = st.selectbox("Tipo de Ação*", options=list(ACTION_OPTIONS.keys()), 
+                                      format_func=lambda x: ACTION_OPTIONS[x], 
+                                      key='rule_form_action_type')
         with col2_a:
             action_value = None
             if action_type == "custom_budget_multiplier":
-                action_value = st.number_input("Multiplicador*", min_value=0.1, value=1.2, step=0.1, format="%.2f", key="rule_form_action_value", help="Ex: 1.2 para aumentar 20%, 0.8 para diminuir 20%")
+                action_value = st.number_input("Multiplicador*", 
+                                              min_value=0.1, 
+                                              value=1.2, 
+                                              step=0.1, 
+                                              format="%.2f", 
+                                              key="rule_form_action_value", 
+                                              help="Ex: 1.2 para aumentar 20%, 0.8 para diminuir 20%")
 
         st.markdown("---")
         st.markdown("##### Resumo da Regra (Pré-visualização)")
         try:
-            val1_fmt = f"{float(primary_value):.2f}" if is_float_metric_p else str(int(primary_value))
+            val1_fmt = f"{float(primary_value):.2f}" if is_float_primary else str(int(primary_value))
             rule_summary = f"**SE** {METRIC_OPTIONS.get(primary_metric, '?')} {OPERATOR_OPTIONS.get(primary_operator, '?')} {val1_fmt} "
             if is_composite and secondary_metric and secondary_operator and secondary_value is not None:
-                val2_fmt = f"{float(secondary_value):.2f}" if is_float_metric_s else str(int(secondary_value))
+                val2_fmt = f"{float(secondary_value):.2f}" if is_float_secondary else str(int(secondary_value))
                 rule_summary += f"**{join_operator}** {METRIC_OPTIONS.get(secondary_metric, '?')} {OPERATOR_OPTIONS.get(secondary_operator, '?')} {val2_fmt} "
             action_text_summary = ACTION_OPTIONS.get(action_type, '?')
             if action_type == "custom_budget_multiplier":
@@ -1030,6 +1507,25 @@ def format_rule_text(rule):
 def show_gerenciador_page():
     """Renderiza a página completa do Gerenciador de Anúncios."""
 
+    # Usa JavaScript para modificar a largura após a página carregar
+    st.markdown("""
+    <script>
+        // Função que modifica o layout para largura total
+        function expandWidth() {
+            const mainElements = document.querySelectorAll('.main .block-container');
+            mainElements.forEach(el => {
+                el.style.maxWidth = '100%';
+                el.style.padding = '2rem';
+            });
+        }
+        
+        // Executa a função após o DOM carregar e repetidamente para garantir
+        document.addEventListener('DOMContentLoaded', expandWidth);
+        // Executa a cada 100ms para garantir que pegue após mudanças dinâmicas
+        const interval = setInterval(expandWidth, 100);
+    </script>
+    """, unsafe_allow_html=True)
+
     # Tenta inicializar/verificar o DB PostgreSQL ao carregar a página
     init_db()
 
@@ -1037,13 +1533,9 @@ def show_gerenciador_page():
     active_config = get_active_api_config()
     all_configs = get_all_api_configs()
 
-    # --- Seletor de Conta Ativa ---
-    st.subheader("Gerenciador de Anúncios")
-    st.markdown("---")
-
     col_selector_label, col_selector_widget = st.columns([1, 3])
     with col_selector_label:
-        st.markdown("##### Conta Ativa:")
+        st.markdown("#### Conta Ativa:")
     with col_selector_widget:
         if all_configs:
             config_options = {cfg['id']: f"{cfg['name']} ({cfg['account_id']})" for cfg in all_configs}
@@ -1091,7 +1583,7 @@ def show_gerenciador_page():
     # --- Interface principal com abas ---
     # Só mostra abas se o DB estiver conectado
     if get_db_connection() is not None:
-        tabs = st.tabs(["📊 Visão Geral", "⚙️ Regras", "🔧 Configurações"])
+        tabs = st.tabs(["📢 Campanhas", "⚙️ Regras", "🔧 Configurações"])
 
         # ==========================
         # Aba 1: Visão Geral
@@ -1112,7 +1604,7 @@ def show_gerenciador_page():
                 elif not campaigns:
                     st.info(f"ℹ️ Nenhuma campanha encontrada para a conta ativa (act_{active_config['account_id']}).")
                 else:
-                    # --- Contagens e Filtro ---
+                    # --- Contagens e Filtro --- (Código igual ao anterior)
                     total_campaigns = len(campaigns)
                     active_statuses = ['ACTIVE']
                     active_campaigns_list = [c for c in campaigns if isinstance(c, dict) and c.get('effective_status', c.get('status')) in active_statuses]
@@ -1125,21 +1617,24 @@ def show_gerenciador_page():
                             "Filtrar por Status:", ["Todas", "Ativas", "Inativas"], index=0, horizontal=True, key="status_filter_radio"
                         )
                     with count_col:
-                        count_text = f"**Total: {total_campaigns}** ({active_campaigns_count} Ativas, {inactive_campaigns_count} Inativas)"
-                        if status_filter == "Ativas": count_text = f"**{active_campaigns_count} Ativas**"
-                        elif status_filter == "Inativas": count_text = f"**{inactive_campaigns_count} Inativas**"
+                        if status_filter == "Ativas":
+                            count_text = f"<strong>{active_campaigns_count} Ativas</strong>"
+                        elif status_filter == "Inativas":
+                            count_text = f"<strong>{inactive_campaigns_count} Inativas</strong>"
+                        else:
+                            count_text = f"<strong>Total: {total_campaigns}</strong> ({active_campaigns_count} Ativas, {inactive_campaigns_count} Inativas)"
                         st.markdown(f"<div style='padding-top: 28px;'>{count_text}</div>", unsafe_allow_html=True)
 
                     st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
-                    # --- Filtragem ---
+                    # --- Filtragem --- (Código igual ao anterior)
                     filtered_campaigns = campaigns
                     if status_filter == "Ativas":
                         filtered_campaigns = active_campaigns_list
                     elif status_filter == "Inativas":
                         filtered_campaigns = [c for c in campaigns if c not in active_campaigns_list]
 
-                    # --- Exibição das Campanhas ---
+                    # --- Exibição das Campanhas --- (Código igual ao anterior)
                     if not filtered_campaigns:
                         st.info(f"Nenhuma campanha encontrada com o status '{status_filter}'.")
                     else:
@@ -1156,6 +1651,7 @@ def show_gerenciador_page():
 
                         # Loop
                         for campaign in filtered_campaigns:
+                            # ... (Cole o loop de exibição da campanha exatamente como estava na versão anterior) ...
                             if not isinstance(campaign, dict): continue
                             campaign_id = campaign.get('id')
                             if not campaign_id: continue
@@ -1209,7 +1705,15 @@ def show_gerenciador_page():
                                                 Campaign(campaign_id).api_update(params={'status': Campaign.Status.paused})
                                                 st.success("Campanha pausada!")
                                                 log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), True, "Pausado manualmente via UI")
-                                                time.sleep(1); st.rerun()
+                    
+                                                # Limpar todos os caches relevantes para garantir atualização de dados
+                                                get_facebook_campaigns_cached.clear()
+                                                get_campaign_insights_cached.clear()
+                                                get_rule_executions_cached.clear()
+                    
+                                                # Esperar um momento e depois atualizar a página
+                                                time.sleep(1.5)
+                                                st.rerun()
                                             except Exception as e:
                                                 st.error(f"Erro ao pausar: {e}")
                                                 log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao pausar via UI: {e}")
@@ -1221,7 +1725,15 @@ def show_gerenciador_page():
                                                 Campaign(campaign_id).api_update(params={'status': Campaign.Status.active})
                                                 st.success("Campanha ativada!")
                                                 log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), True, "Ativado manualmente via UI")
-                                                time.sleep(1); st.rerun()
+                    
+                                                # Limpar todos os caches relevantes para garantir atualização de dados
+                                                get_facebook_campaigns_cached.clear()
+                                                get_campaign_insights_cached.clear()
+                                                get_rule_executions_cached.clear()
+                    
+                                                # Esperar um momento e depois atualizar a página
+                                                time.sleep(1.5)
+                                                st.rerun()
                                             except Exception as e:
                                                 st.error(f"Erro ao ativar: {e}")
                                                 log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao ativar via UI: {e}")
@@ -1271,7 +1783,16 @@ def show_gerenciador_page():
                                                     if success_exec:
                                                         st.success(f"✅ {message_exec}")
                                                         st.toast(f"Regra '{rule_name_sim}' aplicada!", icon="🎉")
-                                                        time.sleep(1.5); st.rerun()
+        
+                                                        # Garantir que os caches foram limpos (execute_rule já deve fazer isso, 
+                                                        # mas vamos garantir novamente)
+                                                        get_facebook_campaigns_cached.clear()
+                                                        get_campaign_insights_cached.clear()
+                                                        get_rule_executions_cached.clear()
+        
+                                                        # Aumentar tempo de espera antes de atualizar
+                                                        time.sleep(2)
+                                                        st.rerun()
                                                     else:
                                                         st.error(f"❌ {message_exec}")
                                                         st.toast(f"Falha ao aplicar regra '{rule_name_sim}'!", icon="🔥")
@@ -1283,7 +1804,7 @@ def show_gerenciador_page():
                             st.markdown("<hr style='margin: 0.3rem 0;'>", unsafe_allow_html=True)
 
 
-                # --- Histórico de Execuções ---
+                # --- Histórico de Execuções --- (Código igual ao anterior)
                 st.markdown("---")
                 st.markdown("##### Histórico Recente de Execuções (Últimas 15)")
                 executions = get_rule_executions_cached(15)
@@ -1308,17 +1829,14 @@ def show_gerenciador_page():
         # Aba 2: Regras
         # ==========================
         with tabs[1]:
-            # --- Código da Aba Regras ---
-            st.subheader("Gerenciamento de Regras de Automação")
-            st.markdown("Crie e gerencie regras para automatizar ações com base em métricas de desempenho.")
-            st.markdown("---")
-
+            # --- Código da Aba Regras --- (Igual ao anterior, pois usa funções DB adaptadas)
             col_rule_hdr1, col_rule_hdr2 = st.columns([3, 1])
             with col_rule_hdr2:
-                if 'show_rule_form' not in st.session_state: st.session_state.show_rule_form = False
+                if 'show_rule_form' not in st.session_state: 
+                    st.session_state.show_rule_form = False
                 button_label = "➖ Recolher Formulário" if st.session_state.show_rule_form else "➕ Nova Regra"
                 button_type = "secondary" if st.session_state.show_rule_form else "primary"
-                if st.button(button_label, use_container_width=True, type=button_type):
+                if st.button(button_label, key="toggle_rule_form_button", use_container_width=True, type=button_type):
                     st.session_state.show_rule_form = not st.session_state.show_rule_form
                     st.rerun()
 
@@ -1326,11 +1844,11 @@ def show_gerenciador_page():
                 with st.container(border=True):
                     show_rule_form()
 
-            st.markdown("---")
             st.markdown("##### Regras Existentes")
             rules = get_all_rules_cached()
             if rules:
                 for rule in rules:
+                    # ... (Cole o loop de exibição das regras exatamente como estava na versão anterior) ...
                     if not isinstance(rule, dict): continue
                     rule_id = rule.get('id')
                     if not rule_id: continue
@@ -1342,8 +1860,9 @@ def show_gerenciador_page():
                         col_rule_desc, col_rule_actions = st.columns([4, 1])
 
                         with col_rule_desc:
-                            # CORREÇÃO APLICADA AQUI: Trocado \" por ' no style
-                            st.markdown(f"**{rule.get('name', 'Regra sem nome')}** {'<span style=\'font-size: 0.8em; color: #999;\">(Inativa)</span>' if not is_active else ''}", unsafe_allow_html=True)
+                            # Definir a parte HTML fora da f-string
+                            inactive_span = '<span style="font-size: 0.8em; color: #999;">(Inativa)</span>'
+                            st.markdown(f"**{rule.get('name', 'Regra sem nome')}** {inactive_span if not is_active else ''}", unsafe_allow_html=True)
                             st.markdown(f"<small>{rule_text}</small>", unsafe_allow_html=True)
                             if rule.get("description"):
                                 st.caption(f"Descrição: {rule.get('description')}")
@@ -1373,25 +1892,22 @@ def show_gerenciador_page():
         # Aba 3: Configurações
         # ==========================
         with tabs[2]:
-            # --- Código da Aba Configurações ---
-            st.subheader("Gerenciamento de Contas do Facebook Ads")
-            st.markdown("Adicione, visualize e gerencie as credenciais de API para as contas de anúncio.")
-            st.markdown("---")
-
+            # --- Código da Aba Configurações --- (Igual ao anterior, pois usa funções DB adaptadas)
             if 'show_add_config_form' not in st.session_state: st.session_state.show_add_config_form = False
 
             col_cfg_hdr1, col_cfg_hdr2 = st.columns([3, 1])
             with col_cfg_hdr2:
-                 button_label_cfg = "➖ Recolher Formulário" if st.session_state.show_add_config_form else "➕ Adicionar Conta"
-                 button_type_cfg = "secondary" if st.session_state.show_add_config_form else "primary"
-                 if st.button(button_label_cfg, use_container_width=True, type=button_type_cfg):
-                     st.session_state.show_add_config_form = not st.session_state.show_add_config_form
-                     st.rerun()
+                button_label_cfg = "➖ Recolher Formulário" if st.session_state.show_add_config_form else "➕ Adicionar Conta"
+                button_type_cfg = "secondary" if st.session_state.show_add_config_form else "primary"
+                if st.button(button_label_cfg, key="toggle_config_form_button", use_container_width=True, type=button_type_cfg):
+                    st.session_state.show_add_config_form = not st.session_state.show_add_config_form
+                    st.rerun()
 
             if st.session_state.get('show_add_config_form', False):
                 with st.container(border=True):
                     st.markdown("##### Adicionar Nova Conta")
                     with st.form("add_api_config_form_tab3"):
+                        # ... (Cole os campos do formulário exatamente como estavam na versão anterior, incluindo st.date_input) ...
                         name_add = st.text_input("Nome da Conexão*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
                         acc_id_add = st.text_input("Account ID* (somente números)", key="add_account_id_tab3", help="ID da sua conta de anúncios, sem 'act_' (ex: 1234567890)")
                         app_id_add = st.text_input("App ID*", key="add_app_id_tab3", help="ID do seu Aplicativo no Facebook Developers")
@@ -1421,6 +1937,7 @@ def show_gerenciador_page():
                             else:
                                 st.warning("Preencha todos os campos marcados com *.")
                     with st.expander("Como obter as credenciais do Facebook?"):
+                         # ... (Cole as instruções exatamente como estavam na versão anterior) ...
                          st.markdown("""
                          1.  **App ID e App Secret:** Crie um aplicativo em [Facebook for Developers](https://developers.facebook.com/apps/). Vá em Configurações > Básico.
                          2.  **Account ID (ID da Conta de Anúncios):** No Gerenciador de Anúncios do Facebook, o ID da conta aparece na URL (ex: `act=123456789`) ou nas configurações da conta. Use apenas os números.
@@ -1429,11 +1946,11 @@ def show_gerenciador_page():
                          5.  **Página ID (Opcional):** Na página do Facebook, vá na seção "Sobre" e procure pelo ID da Página.
                          """)
 
-            st.markdown("---")
-            st.markdown("##### Contas Configuradas")
+            st.markdown("##### Suas Contas")
             all_configs_tab3 = get_all_api_configs()
             if all_configs_tab3:
                 for config in all_configs_tab3:
+                    # ... (Cole o loop de exibição das configurações exatamente como estava na versão anterior, incluindo a lógica da data de vencimento) ...
                     if not isinstance(config, dict): continue
                     config_id = config.get('id')
                     if not config_id: continue
