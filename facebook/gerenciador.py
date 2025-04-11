@@ -1112,7 +1112,7 @@ def show_gerenciador_page():
                 elif not campaigns:
                     st.info(f"ℹ️ Nenhuma campanha encontrada para a conta ativa (act_{active_config['account_id']}).")
                 else:
-                    # --- Contagens e Filtro --- (Código igual ao anterior)
+                    # --- Contagens e Filtro ---
                     total_campaigns = len(campaigns)
                     active_statuses = ['ACTIVE']
                     active_campaigns_list = [c for c in campaigns if isinstance(c, dict) and c.get('effective_status', c.get('status')) in active_statuses]
@@ -1132,14 +1132,14 @@ def show_gerenciador_page():
 
                     st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
-                    # --- Filtragem --- (Código igual ao anterior)
+                    # --- Filtragem ---
                     filtered_campaigns = campaigns
                     if status_filter == "Ativas":
                         filtered_campaigns = active_campaigns_list
                     elif status_filter == "Inativas":
                         filtered_campaigns = [c for c in campaigns if c not in active_campaigns_list]
 
-                    # --- Exibição das Campanhas --- (Código igual ao anterior)
+                    # --- Exibição das Campanhas ---
                     if not filtered_campaigns:
                         st.info(f"Nenhuma campanha encontrada com o status '{status_filter}'.")
                     else:
@@ -1156,7 +1156,6 @@ def show_gerenciador_page():
 
                         # Loop
                         for campaign in filtered_campaigns:
-                            # ... (Cole o loop de exibição da campanha exatamente como estava na versão anterior) ...
                             if not isinstance(campaign, dict): continue
                             campaign_id = campaign.get('id')
                             if not campaign_id: continue
@@ -1284,7 +1283,7 @@ def show_gerenciador_page():
                             st.markdown("<hr style='margin: 0.3rem 0;'>", unsafe_allow_html=True)
 
 
-                # --- Histórico de Execuções --- (Código igual ao anterior)
+                # --- Histórico de Execuções ---
                 st.markdown("---")
                 st.markdown("##### Histórico Recente de Execuções (Últimas 15)")
                 executions = get_rule_executions_cached(15)
@@ -1309,7 +1308,7 @@ def show_gerenciador_page():
         # Aba 2: Regras
         # ==========================
         with tabs[1]:
-            # --- Código da Aba Regras --- (Igual ao anterior, pois usa funções DB adaptadas)
+            # --- Código da Aba Regras ---
             st.subheader("Gerenciamento de Regras de Automação")
             st.markdown("Crie e gerencie regras para automatizar ações com base em métricas de desempenho.")
             st.markdown("---")
@@ -1332,7 +1331,6 @@ def show_gerenciador_page():
             rules = get_all_rules_cached()
             if rules:
                 for rule in rules:
-                    # ... (Cole o loop de exibição das regras exatamente como estava na versão anterior) ...
                     if not isinstance(rule, dict): continue
                     rule_id = rule.get('id')
                     if not rule_id: continue
@@ -1344,7 +1342,8 @@ def show_gerenciador_page():
                         col_rule_desc, col_rule_actions = st.columns([4, 1])
 
                         with col_rule_desc:
-                            st.markdown(f"**{rule.get('name', 'Regra sem nome')}** {'<span style=\"font-size: 0.8em; color: #999;\">(Inativa)</span>' if not is_active else ''}", unsafe_allow_html=True)
+                            # CORREÇÃO APLICADA AQUI: Trocado \" por ' no style
+                            st.markdown(f"**{rule.get('name', 'Regra sem nome')}** {'<span style=\'font-size: 0.8em; color: #999;\">(Inativa)</span>' if not is_active else ''}", unsafe_allow_html=True)
                             st.markdown(f"<small>{rule_text}</small>", unsafe_allow_html=True)
                             if rule.get("description"):
                                 st.caption(f"Descrição: {rule.get('description')}")
@@ -1374,7 +1373,7 @@ def show_gerenciador_page():
         # Aba 3: Configurações
         # ==========================
         with tabs[2]:
-            # --- Código da Aba Configurações --- (Igual ao anterior, pois usa funções DB adaptadas)
+            # --- Código da Aba Configurações ---
             st.subheader("Gerenciamento de Contas do Facebook Ads")
             st.markdown("Adicione, visualize e gerencie as credenciais de API para as contas de anúncio.")
             st.markdown("---")
@@ -1393,7 +1392,6 @@ def show_gerenciador_page():
                 with st.container(border=True):
                     st.markdown("##### Adicionar Nova Conta")
                     with st.form("add_api_config_form_tab3"):
-                        # ... (Cole os campos do formulário exatamente como estavam na versão anterior, incluindo st.date_input) ...
                         name_add = st.text_input("Nome da Conexão*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
                         acc_id_add = st.text_input("Account ID* (somente números)", key="add_account_id_tab3", help="ID da sua conta de anúncios, sem 'act_' (ex: 1234567890)")
                         app_id_add = st.text_input("App ID*", key="add_app_id_tab3", help="ID do seu Aplicativo no Facebook Developers")
@@ -1423,7 +1421,6 @@ def show_gerenciador_page():
                             else:
                                 st.warning("Preencha todos os campos marcados com *.")
                     with st.expander("Como obter as credenciais do Facebook?"):
-                         # ... (Cole as instruções exatamente como estavam na versão anterior) ...
                          st.markdown("""
                          1.  **App ID e App Secret:** Crie um aplicativo em [Facebook for Developers](https://developers.facebook.com/apps/). Vá em Configurações > Básico.
                          2.  **Account ID (ID da Conta de Anúncios):** No Gerenciador de Anúncios do Facebook, o ID da conta aparece na URL (ex: `act=123456789`) ou nas configurações da conta. Use apenas os números.
@@ -1437,7 +1434,6 @@ def show_gerenciador_page():
             all_configs_tab3 = get_all_api_configs()
             if all_configs_tab3:
                 for config in all_configs_tab3:
-                    # ... (Cole o loop de exibição das configurações exatamente como estava na versão anterior, incluindo a lógica da data de vencimento) ...
                     if not isinstance(config, dict): continue
                     config_id = config.get('id')
                     if not config_id: continue

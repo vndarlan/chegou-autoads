@@ -1,0 +1,14 @@
+[theme]
+# Define o tema base como claro (padrão já é claro, mas bom explicitar)
+base="light"
+
+# Define a cor primária (usada em botões, seletores, etc.) como um tom de vermelho
+# Você pode escolher outros tons de vermelho se preferir.
+# Exemplos: "#FF4B4B" (vermelho padrão do Streamlit para erros), "#D32F2F", "#E53935"
+primaryColor="#D32F2F"
+
+# Opcional: Você pode definir outras cores se quiser mais personalização
+# backgroundColor="#FFFFFF"  # Cor de fundo principal (branco padrão)
+# secondaryBackgroundColor="#F0F2F6" # Cor de fundo secundária (cinza claro padrão)
+# textColor="#31333F"       # Cor do texto principal (cinza escuro padrão)
+# font="sans serif"         # Fonte padrão

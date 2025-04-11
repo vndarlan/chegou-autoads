@@ -60,12 +60,6 @@ def show_logout_button():
 
 def main():
     """Função principal que controla a lógica da aplicação."""
-
-    # --- AVISO DE SEGURANÇA ---
-    # Movido para cá, após st.set_page_config ter sido chamado
-    st.sidebar.warning("⚠️ **Atenção:** O sistema de login atual NÃO é seguro para produção. As senhas estão visíveis no código.")
-    # --- FIM AVISO ---
-
     # Inicializa variáveis de sessão se não existirem
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
@@ -96,17 +90,12 @@ def main():
 
     # Lógica de navegação baseada no login
     if not st.session_state["logged_in"]:
-        st.sidebar.header("ChegouOperation")
-        st.sidebar.markdown("---")
         # Página de Login como única opção
         pages = [st.Page(login_page, title="Login", icon=":material/lock:", default=True)]
         pg = st.navigation(pages, position="sidebar")
         pg.run()
     else:
         # Usuário Logado
-        st.sidebar.header("ChegouOperation")
-        st.sidebar.markdown("---")
-
         # Define páginas de acordo com o cargo (ajuste conforme necessário)
         if st.session_state["cargo"] == "Administrador":
             pages = {
@@ -146,7 +135,7 @@ if __name__ == "__main__":
     st.set_page_config(
         page_title="GC Operacional",
         page_icon="📊",
-        layout="centered", # Mantido como 'centered' conforme seu setup original
+        layout="wide", # Mantido como 'centered' conforme seu setup original
         initial_sidebar_state="expanded"
     )
     # Agora chama a função principal que contém o resto da lógica e o warning
