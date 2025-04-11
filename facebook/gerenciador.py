@@ -1962,7 +1962,8 @@ def show_gerenciador_page():
                         col_details, col_actions_cfg = st.columns([4, 1])
 
                         with col_details:
-                            st.markdown(f"**{config_name}** {'<span class=\"success-badge\">Ativa</span>' if is_currently_active else ''}", unsafe_allow_html=True)
+                            active_badge = '<span class="success-badge">Ativa</span>' if is_currently_active else ''
+                            st.markdown(f"**{config_name}** {active_badge}", unsafe_allow_html=True)
                             st.caption(f"Account ID: `{config.get('account_id', 'N/A')}` | App ID: `{config.get('app_id', 'N/A')}`")
 
                             expires_date = config.get('token_expires_at') # Já é objeto date ou None
