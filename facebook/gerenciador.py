@@ -8,6 +8,7 @@ import time
 import psycopg2 # Importa o driver PostgreSQL
 from psycopg2 import Error as PgError # Erro específico do psycopg2
 import traceback
+import sqlite3
 
 # Importações da API do Facebook (mantidas)
 try:
@@ -1447,7 +1448,7 @@ def show_rule_form():
     st.session_state.setdefault('rule_form_action_type', 'pause_campaign')
     st.session_state.setdefault('rule_form_execution_mode', 'manual')
     st.session_state.setdefault('rule_form_interval', 6)
-    st.session_state.setdefault('rule_form_join_operator', 'AND') # Adicionado join_operator
+    st.session_state.setdefault('rule_form_join_operator', 'AND')
 
     # --- Controles Fora do Formulário ---
     st.markdown("##### Configuração Inicial da Regra")
@@ -1457,170 +1458,176 @@ def show_rule_form():
     col1_m, col2_m = st.columns(2)
     with col1_m:
         st.markdown("**1ª Condição:**")
-        # Usar a chave do session_state diretamente no selectbox
         primary_metric = st.selectbox(
-            "Métrica Primária",
-            options=list(METRIC_OPTIONS.keys()),
-            format_func=lambda x: METRIC_OPTIONS[x],
-            key='rule_form_primary_metric' # Chave para guardar o estado
+            "Métrica Primária", options=list(METRIC_OPTIONS.keys()),
+            format_func=lambda x: METRIC_OPTIONS[x], key='rule_form_primary_metric'
         )
-    # Lê o valor atual da métrica secundária do estado da sessão
     secondary_metric = st.session_state.rule_form_secondary_metric
     with col2_m:
         if is_composite:
             st.markdown("**2ª Condição:**")
             secondary_metric = st.selectbox(
-                "Métrica Secundária",
-                options=list(METRIC_OPTIONS.keys()),
-                format_func=lambda x: METRIC_OPTIONS[x],
-                key='rule_form_secondary_metric' # Chave para guardar o estado
+                "Métrica Secundária", options=list(METRIC_OPTIONS.keys()),
+                format_func=lambda x: METRIC_OPTIONS[x], key='rule_form_secondary_metric'
             )
-        else:
-             st.markdown("") # Espaço vazio para alinhar
+        else: st.markdown("")
 
-    # Operador de Junção (só aparece se for composto)
-    join_operator = st.session_state.rule_form_join_operator # Lê do estado
+    join_operator = st.session_state.rule_form_join_operator
     if is_composite:
         join_operator = st.radio(
-            "Operador de Junção:",
-            ["AND", "OR"],
-            key="rule_form_join_operator", # Chave para guardar o estado
-            index=0 if st.session_state.rule_form_join_operator == 'AND' else 1, # Define o índice inicial
-            horizontal=True,
-            format_func=lambda x: {"AND": "E (ambas)", "OR": "OU (uma ou ambas)"}.get(x)
+            "Operador de Junção:", ["AND", "OR"], key="rule_form_join_operator",
+            index=0 if st.session_state.rule_form_join_operator == 'AND' else 1,
+            horizontal=True, format_func=lambda x: {"AND": "E (ambas)", "OR": "OU (uma ou ambas)"}.get(x)
         )
 
-    # --- MODO DE EXECUÇÃO (FORA DO FORMULÁRIO) ---
     st.markdown("---")
     st.markdown("##### Modo de Execução")
-    # Este radio button agora está fora do form!
-    # Quando clicado, vai causar um rerun imediato.
     st.radio(
-        "Como executar esta regra?",
-        options=['manual', 'automatic'],
+        "Como executar esta regra?", options=['manual', 'automatic'],
         format_func=lambda x: {'manual': 'Manualmente (pelo botão "Aplicar")', 'automatic': 'Automaticamente (agendada)'}.get(x),
-        key='rule_form_execution_mode', # Chave para guardar o estado
-        horizontal=True
+        key='rule_form_execution_mode', horizontal=True
     )
-    # --- FIM DO MODO DE EXECUÇÃO FORA DO FORMULÁRIO ---
+    # --- Fim dos Controles Fora do Formulário ---
 
-
-    # Determina tipos de métrica (float ou int) baseado no estado da sessão
-    is_float_primary = st.session_state.rule_form_primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+    # Determina tipos de métrica (float ou int) baseado no estado da sessão ATUAL
+    current_primary_metric = st.session_state.rule_form_primary_metric
+    current_secondary_metric = st.session_state.rule_form_secondary_metric
+    is_float_primary = current_primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
     is_float_secondary = False
-    if is_composite:
-        is_float_secondary = st.session_state.rule_form_secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+    if is_composite: is_float_secondary = current_secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
 
-    # --- Início do Formulário (Contém apenas os campos que precisam ser enviados juntos) ---
+    # --- Início do Formulário ---
     with st.form("new_rule_form"):
-        st.markdown("---") # Linha divisória para clareza
+        st.markdown("---")
         st.markdown("##### Detalhes da Regra")
-        name = st.text_input("Nome da Regra*", key="rule_form_name") # Mantém estado com key
-        description = st.text_area("Descrição (Opcional)", height=80, key="rule_form_description") # Mantém estado
+        name = st.text_input("Nome da Regra*", key="rule_form_name")
+        description = st.text_area("Descrição (Opcional)", height=80, key="rule_form_description")
 
         st.markdown("---")
         st.markdown("##### Condições (Valores)")
-        # Mostra a métrica selecionada (lida do estado), mas pega o valor aqui
-        st.markdown(f"**1ª Condição: {METRIC_OPTIONS[st.session_state.rule_form_primary_metric]}**")
+        st.markdown(f"**1ª Condição: {METRIC_OPTIONS[current_primary_metric]}**")
         col1_p, col2_p = st.columns([1, 2])
         with col1_p:
             primary_operator = st.selectbox(
-                "Operador",
-                options=list(OPERATOR_OPTIONS.keys()),
-                format_func=lambda x: OPERATOR_OPTIONS[x],
-                key="rule_form_primary_operator" # Chave para guardar o estado
+                "Operador", options=list(OPERATOR_OPTIONS.keys()),
+                format_func=lambda x: OPERATOR_OPTIONS[x], key="rule_form_primary_operator"
             )
         with col2_p:
             label_p = "Valor (R$)*" if is_float_primary else "Quantidade*"
             step_p = 0.01 if is_float_primary else 1
             format_p = "%.2f" if is_float_primary else "%d"
+            # *** CORREÇÃO AQUI: Adiciona argumento 'value' ***
+            primary_value_key = f"rule_form_primary_value_{current_primary_metric}"
+            # Define o valor padrão correto (0.0 ou 0)
+            default_primary_value = 0.0 if is_float_primary else 0
             primary_value = st.number_input(
                 label_p,
-                min_value=0.0 if st.session_state.rule_form_primary_metric != 'roas' else None,
+                min_value=0.0 if current_primary_metric != 'roas' else None,
                 step=step_p,
                 format=format_p,
-                key=f"rule_form_primary_value_{st.session_state.rule_form_primary_metric}" # Chave dinâmica
+                key=primary_value_key,
+                # Lê o valor do estado da sessão ou usa o padrão numérico correto
+                value=st.session_state.get(primary_value_key, default_primary_value)
             )
 
-        # Condição Secundária (somente valor e operador, se is_composite for True)
         secondary_operator = None
         secondary_value = None
         if is_composite:
-            st.markdown(f"**2ª Condição: {METRIC_OPTIONS[st.session_state.rule_form_secondary_metric]}**")
+            st.markdown(f"**2ª Condição: {METRIC_OPTIONS[current_secondary_metric]}**")
             col1_s, col2_s = st.columns([1, 2])
             with col1_s:
                 secondary_operator = st.selectbox(
-                    "Operador",
-                    options=list(OPERATOR_OPTIONS.keys()),
-                    format_func=lambda x: OPERATOR_OPTIONS[x],
-                    key="rule_form_secondary_operator" # Chave para guardar o estado
+                    "Operador", options=list(OPERATOR_OPTIONS.keys()),
+                    format_func=lambda x: OPERATOR_OPTIONS[x], key="rule_form_secondary_operator"
                 )
             with col2_s:
                 label_s = "Valor (R$)*" if is_float_secondary else "Quantidade*"
                 step_s = 0.01 if is_float_secondary else 1
                 format_s = "%.2f" if is_float_secondary else "%d"
+                # *** CORREÇÃO AQUI: Adiciona argumento 'value' ***
+                secondary_value_key = f"rule_form_secondary_value_{current_secondary_metric}"
+                # Define o valor padrão correto (0.0 ou 0)
+                default_secondary_value = 0.0 if is_float_secondary else 0
                 secondary_value = st.number_input(
                     label_s,
-                    min_value=0.0 if st.session_state.rule_form_secondary_metric != 'roas' else None,
+                    min_value=0.0 if current_secondary_metric != 'roas' else None,
                     step=step_s,
                     format=format_s,
-                    key=f"rule_form_secondary_value_{st.session_state.rule_form_secondary_metric}" # Chave dinâmica
+                    key=secondary_value_key,
+                     # Lê o valor do estado da sessão ou usa o padrão numérico correto
+                    value=st.session_state.get(secondary_value_key, default_secondary_value)
                 )
 
         st.markdown("---")
         st.markdown("##### Ação a Executar")
         col1_a, col2_a = st.columns(2)
+        # Ação é definida pelo estado da sessão, não precisa ler aqui
+        current_action_type = st.session_state.rule_form_action_type
         with col1_a:
-            # Ler a action_type do estado da sessão para consistência
-            action_type = st.selectbox(
-                "Tipo de Ação*",
-                options=list(ACTION_OPTIONS.keys()),
+             # Apenas exibe a ação selecionada (desabilitado para não confundir)
+             st.selectbox(
+                "Tipo de Ação*", options=list(ACTION_OPTIONS.keys()),
                 format_func=lambda x: ACTION_OPTIONS[x],
-                key='rule_form_action_type' # Chave para guardar o estado
+                key='rule_form_action_type', # Mantém a chave para ler o estado
+                disabled=True # Desabilita para evitar mudança dentro do form
                 )
         with col2_a:
             action_value = None
-            # Mostrar input do multiplicador se a ação selecionada (no estado) for essa
-            if st.session_state.rule_form_action_type == "custom_budget_multiplier":
+            if current_action_type == "custom_budget_multiplier":
+                action_value_key = "rule_form_action_value"
+                 # *** CORREÇÃO AQUI: Adiciona argumento 'value' ***
+                default_action_value = 1.2 # Default para multiplicador
                 action_value = st.number_input(
-                    "Multiplicador*",
-                    min_value=0.1, value=1.2, step=0.1, format="%.2f",
-                    key="rule_form_action_value", # Chave para guardar estado
+                    "Multiplicador*", min_value=0.1, step=0.1, format="%.2f",
+                    key=action_value_key,
+                    # Lê o valor do estado da sessão ou usa o padrão numérico correto
+                    value=st.session_state.get(action_value_key, default_action_value),
                     help="Ex: 1.2 para aumentar 20%"
                     )
 
-        # --- INTERVALO DE EXECUÇÃO (DENTRO DO FORM, MAS CONDICIONAL) ---
-        interval_hours = None # Default para modo manual
-        # Verifica o MODO selecionado (que está FORA do form, no session_state)
-        if st.session_state['rule_form_execution_mode'] == 'automatic':
-            st.markdown("---") # Separador visual
+        # --- INTERVALO DE EXECUÇÃO (DENTRO DO FORM, CONDICIONAL) ---
+        interval_hours = None
+        # Verifica o MODO selecionado (no session_state)
+        current_execution_mode = st.session_state['rule_form_execution_mode']
+        if current_execution_mode == 'automatic':
+            st.markdown("---")
+            interval_key = 'rule_form_interval'
+             # *** CORREÇÃO AQUI: Adiciona argumento 'index' baseado no estado ***
+            # Encontra o índice da opção salva no estado, default para índice 0 se não achar
+            options_list = list(INTERVAL_OPTIONS.keys())
+            try:
+                 current_interval_value = st.session_state.get(interval_key, options_list[2]) # Default para 6 horas (índice 2)
+                 default_index = options_list.index(current_interval_value)
+            except ValueError:
+                 default_index = 2 # Default para 6 horas se valor salvo for inválido
+
             interval_hours = st.selectbox(
                 "Executar a cada:",
-                options=list(INTERVAL_OPTIONS.keys()),
+                options=options_list,
                 format_func=lambda x: INTERVAL_OPTIONS[x],
-                key='rule_form_interval', # Chave para guardar o estado
-                help="Com que frequência o sistema deve verificar e aplicar esta regra automaticamente?"
+                key=interval_key,
+                index=default_index, # Define o índice inicial corretamente
+                help="Com que frequência o sistema deve verificar?"
             )
         # --- FIM INTERVALO ---
 
         st.markdown("---")
         st.markdown("##### Resumo da Regra (Pré-visualização)")
+        # (Lógica do resumo permanece a mesma, usando session_state para partes externas
+        # e variáveis locais para partes internas do form)
         try:
-            # Monta o resumo usando os valores dos widgets DENTRO do form
-            # e os valores do session_state para os widgets FORA do form
             val1_fmt = f"{float(primary_value):.2f}" if is_float_primary else str(int(primary_value))
-            rule_summary = f"**SE** {METRIC_OPTIONS[st.session_state.rule_form_primary_metric]} {OPERATOR_OPTIONS.get(primary_operator, '?')} {val1_fmt} "
+            rule_summary = f"**SE** {METRIC_OPTIONS[current_primary_metric]} {OPERATOR_OPTIONS.get(primary_operator, '?')} {val1_fmt} "
             if is_composite and secondary_operator and secondary_value is not None:
                 val2_fmt = f"{float(secondary_value):.2f}" if is_float_secondary else str(int(secondary_value))
-                rule_summary += f"**{st.session_state.rule_form_join_operator}** {METRIC_OPTIONS[st.session_state.rule_form_secondary_metric]} {OPERATOR_OPTIONS.get(secondary_operator, '?')} {val2_fmt} "
+                rule_summary += f"**{st.session_state.rule_form_join_operator}** {METRIC_OPTIONS[current_secondary_metric]} {OPERATOR_OPTIONS.get(secondary_operator, '?')} {val2_fmt} "
 
-            action_text_summary = ACTION_OPTIONS.get(st.session_state.rule_form_action_type, '?')
-            if st.session_state.rule_form_action_type == "custom_budget_multiplier":
+            action_text_summary = ACTION_OPTIONS.get(current_action_type, '?')
+            if current_action_type == "custom_budget_multiplier":
                 action_text_summary += f" ({float(action_value):.2f})" if action_value is not None else " (valor?)"
             rule_summary += f"**ENTÃO** {action_text_summary}"
 
-            # Adiciona modo de execução ao resumo (lendo do session_state)
-            if st.session_state.rule_form_execution_mode == 'automatic' and interval_hours:
+            if current_execution_mode == 'automatic' and interval_hours:
                  rule_summary += f".<br>**MODO:** Automático ({INTERVAL_OPTIONS.get(interval_hours, '?')})"
             else:
                  rule_summary += ".<br>**MODO:** Manual"
@@ -1628,47 +1635,52 @@ def show_rule_form():
         except (ValueError, TypeError, AttributeError):
             st.caption("Aguardando valores válidos para gerar resumo...")
 
-        # Botão de submit do formulário
+        # --- Botão de Submit ---
+        # Garanta que ele está DENTRO do 'with st.form(...):'
         submitted = st.form_submit_button("💾 Criar Regra", use_container_width=True)
         if submitted:
-            # --- Validação ao Submeter ---
-            # Lê os valores finais dos widgets e do session_state
-            current_execution_mode = st.session_state.rule_form_execution_mode
-            current_interval_hours = interval_hours # Pega o valor do selectbox SE ele foi renderizado
-            current_action_type = st.session_state.rule_form_action_type # Pega do estado
-            current_is_composite = st.session_state.rule_form_is_composite # Pega do estado
+            # --- Validação e Submissão ---
+            # Lê os valores FINAIS do estado da sessão e das variáveis do formulário
+            final_execution_mode = st.session_state.rule_form_execution_mode
+            final_interval_hours = interval_hours # Pega o valor do selectbox se visível
+            final_action_type = st.session_state.rule_form_action_type
+            final_is_composite = st.session_state.rule_form_is_composite
+            final_primary_metric = st.session_state.rule_form_primary_metric
+            final_secondary_metric = st.session_state.rule_form_secondary_metric
+            final_join_operator = st.session_state.rule_form_join_operator
 
             error = False
             if not name: st.error("O nome da regra é obrigatório."); error = True
-            if primary_value is None: st.error("O valor da 1ª condição é obrigatório."); error = True
-            if current_is_composite and secondary_value is None: st.error("O valor da 2ª condição é obrigatório para regras compostas."); error = True
-            if current_action_type == "custom_budget_multiplier" and action_value is None: st.error("O valor multiplicador é obrigatório para esta ação."); error = True
-            # Verifica intervalo SÓ SE o modo for automático
-            if current_execution_mode == 'automatic' and current_interval_hours is None:
-                 st.error("Selecione um intervalo para execução automática."); error = True
+            if primary_value is None : st.error("O valor da 1ª condição é obrigatório."); error = True
+            if final_is_composite and secondary_value is None: st.error("O valor da 2ª condição é obrigatório para regras compostas."); error = True
+            if final_action_type == "custom_budget_multiplier" and action_value is None: st.error("O valor multiplicador é obrigatório para esta ação."); error = True
+            if final_execution_mode == 'automatic' and final_interval_hours is None: st.error("Selecione um intervalo para execução automática."); error = True
 
             if not error:
-                # Pega os valores finais corretos para passar para add_rule
-                final_primary_value = float(primary_value)
-                final_secondary_value = float(secondary_value) if current_is_composite and secondary_value is not None else None
-                final_action_value = float(action_value) if current_action_type == "custom_budget_multiplier" and action_value is not None else None
-                final_interval = current_interval_hours if current_execution_mode == 'automatic' else None # Garante None se manual
+                # Prepara os valores numéricos finais
+                submit_primary_value = float(primary_value)
+                submit_secondary_value = float(secondary_value) if final_is_composite and secondary_value is not None else None
+                submit_action_value = float(action_value) if final_action_type == "custom_budget_multiplier" and action_value is not None else None
+                submit_interval = final_interval_hours if final_execution_mode == 'automatic' else None
 
+                # Chama add_rule com todos os valores corretos
                 if add_rule(
                     name=name, description=description,
-                    primary_metric=st.session_state.rule_form_primary_metric, # Pega do estado
-                    primary_operator=primary_operator, primary_value=final_primary_value,
-                    action_type=current_action_type, # Pega do estado
-                    action_value=final_action_value,
-                    is_composite=1 if current_is_composite else 0, # Pega do estado
-                    secondary_metric=st.session_state.rule_form_secondary_metric if current_is_composite else None, # Pega do estado
-                    secondary_operator=secondary_operator, secondary_value=final_secondary_value,
-                    join_operator=st.session_state.rule_form_join_operator, # Pega do estado
-                    execution_mode=current_execution_mode, # Pega do estado
-                    execution_interval_hours=final_interval
+                    primary_metric=final_primary_metric, primary_operator=primary_operator, primary_value=submit_primary_value,
+                    action_type=final_action_type, action_value=submit_action_value,
+                    is_composite=1 if final_is_composite else 0,
+                    secondary_metric=final_secondary_metric if final_is_composite else None,
+                    secondary_operator=secondary_operator, secondary_value=submit_secondary_value,
+                    join_operator=final_join_operator,
+                    execution_mode=final_execution_mode,
+                    execution_interval_hours=submit_interval
                     ):
                     st.success("✅ Regra criada com sucesso!")
                     st.session_state.show_rule_form = False
+                    # Limpa chaves específicas do formulário para resetar na próxima vez
+                    keys_to_clear = [k for k in st.session_state if k.startswith('rule_form_')]
+                    for key in keys_to_clear:
+                        del st.session_state[key]
                     time.sleep(1)
                     st.rerun()
                 else:
