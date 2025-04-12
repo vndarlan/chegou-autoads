@@ -14,13 +14,13 @@ def force_rerun():
 
 # Dicionário de usuários (NÃO use em produção sem hashing de senhas)
 USERS = {
-    "adminoperacional@grupochegou.com": {"password": "admgcopera2025", "cargo": "Administrador"},
-    "operacional@grupochegou.com":  {"password": "gcopera2025",  "cargo": "Usuário"},
+    "adminautoads@grupochegou.com": {"password": "admgcads2025", "cargo": "Administrador"},
+    "autoads@grupochegou.com":  {"password": "gcads2025",  "cargo": "Usuário"},
 }
 
 def login_page():
     """Página de Login."""
-    st.title("Chegou Operation")
+    st.title("Chegou AutoADS")
     st.subheader("Faça seu login")
 
     email = st.text_input("Email")
@@ -68,7 +68,7 @@ def main():
         if st.session_state["cargo"] == "Administrador":
             pages = {
                 "Principal": [
-                    st.Page("principal/home.py", title="Home", icon=":material/home:", default=True),
+                    st.Page("principal/mapa.py", title="Mapa de Atuação", icon=":material/map:", default=True),
                     st.Page("principal/tutorial.py", title="Tutoriais", icon=":material/video_library:"),
                 ],
                 "Facebook Ads": [
@@ -80,7 +80,7 @@ def main():
         else: # Usuário comum
              pages = {
                 "Principal": [
-                    st.Page("principal/home.py", title="Home", icon=":material/home:", default=True),
+                    st.Page("principal/mapa.py", title="Mapa de Atuação", icon=":material/map:", default=True),
                     st.Page("principal/tutorial.py", title="Tutoriais", icon=":material/video_library:"),
                 ],
                 "Facebook Ads": [

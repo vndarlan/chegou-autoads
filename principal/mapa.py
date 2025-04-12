@@ -82,14 +82,11 @@ def create_country_status_df(country_data_dict, name_mapping):
 
 # --- Streamlit Page ---
 
-st.title("🗺️ Mapa de Atuação Global")
+st.title("🗺️ Mapa de Atuação")
 st.markdown("Visualize os países onde o Grupo Chegou opera, operou ou está expandindo.")
 
 # --- Load Data & GeoJSON ---
 local_geojson_path = download_geojson(GEOJSON_URL, GEOJSON_LOCAL_PATH)
-
-# --- Display Map and Legend Side-by-Side ---
-st.subheader("Mapa Interativo e Legenda")
 
 # Create columns: 4 parts for the map, 1 part for the legend (adjust ratio if needed)
 map_col, legend_col = st.columns([4, 1])
@@ -171,7 +168,7 @@ with legend_col:
     # Combine legend items for potentially tighter spacing
     legend_html = f"""
     <div style="line-height: 1.6;">
-    <span style='color:{STATUS_COLORS_HEX['active']}; font-size: 1.3em; vertical-align: middle;'>■</span> <span style='vertical-align: middle; font-size: 0.9em;'>Atuando Atualmente</span><br>
+    <span style='color:{STATUS_COLORS_HEX['active']}; font-size: 1.3em; vertical-align: middle;'>■</span> <span style='vertical-align: middle; font-size: 0.9em;'>Atuando</span><br>
     <span style='color:{STATUS_COLORS_HEX['expanding']}; font-size: 1.3em; vertical-align: middle;'>■</span> <span style='vertical-align: middle; font-size: 0.9em;'>Em Expansão / Validação</span><br>
     <span style='color:{STATUS_COLORS_HEX['past']}; font-size: 1.3em; vertical-align: middle;'>■</span> <span style='vertical-align: middle; font-size: 0.9em;'>Já Atuamos (Não Ativo)</span><br>
     <span style='color:{STATUS_COLORS_HEX['default']}; font-size: 1.3em; vertical-align: middle;'>■</span> <span style='vertical-align: middle; font-size: 0.9em;'>Outros Países</span><br>
@@ -183,12 +180,11 @@ with legend_col:
 
 # --- Display Current Lists (Below Map/Legend) ---
 st.divider()
-st.subheader("Listas de Países por Status")
 
 col1, col2, col3 = st.columns(3) # Keep lists in 3 columns
 
 with col1:
-    st.markdown(f"**<span style='color:{STATUS_COLORS_HEX['active']};'>Atuando Atualmente</span>**", unsafe_allow_html=True)
+    st.markdown(f"**<span style='color:{STATUS_COLORS_HEX['active']};'>Atuando</span>**", unsafe_allow_html=True)
     active_countries = COUNTRY_DATA.get("active", [])
     if active_countries: st.markdown("\n".join([f"- {country}" for country in active_countries]))
     else: st.write("Nenhum")
@@ -207,11 +203,6 @@ with col3:
     if past_countries: st.markdown("\n".join([f"- {country}" for country in past_countries]))
     else: st.write("Nenhum")
 
-# --- Optional: Add a note about updating ---
-st.caption("Nota: Para atualizar as listas e coordenadas, edite os dicionários `COUNTRY_DATA`, `NAME_MAP` e `COUNTRY_COORDINATES` no arquivo `principal/home.py`.")
-
-# --- Include Font Awesome CSS ---
-# Ensure this is still loaded for the icons in map and legend
 st.markdown("""
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
 """, unsafe_allow_html=True)

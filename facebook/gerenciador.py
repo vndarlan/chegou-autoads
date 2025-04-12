@@ -152,155 +152,167 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False, is_dml=F
     return result
 
 def init_db():
-    """Inicializa o banco de dados."""
+    """Inicializa o banco de dados, criando/atualizando tabelas."""
     conn_info = get_db_connection()
     if conn_info is None:
         st.error("Não foi possível inicializar o banco de dados: Falha na conexão.")
         return
-    
+
     conn, conn_type = conn_info
     cursor = None
-    
+    print(f"Inicializando/Verificando DB ({conn_type})...") # Log
+
     try:
         cursor = conn.cursor()
-        
-        # Criar tabelas com a sintaxe apropriada para o tipo de DB
+
+        # --- Tabela api_config (sem alterações aqui, mantenha como está no seu código original) ---
         if conn_type == "sqlite":
-            # Tabela api_config
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS api_config (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    app_id TEXT NOT NULL,
-                    app_secret TEXT NOT NULL,
-                    access_token TEXT NOT NULL,
-                    account_id TEXT NOT NULL,
-                    business_id TEXT,
-                    page_id TEXT,
-                    is_active INTEGER DEFAULT 0,
-                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    token_expires_at DATE
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, app_id TEXT NOT NULL,
+                    app_secret TEXT NOT NULL, access_token TEXT NOT NULL, account_id TEXT NOT NULL,
+                    business_id TEXT, page_id TEXT, is_active INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP, token_expires_at DATE
                 )
             ''')
-            
-            # Verificar coluna token_expires_at
             cursor.execute("PRAGMA table_info(api_config)")
-            columns = [info[1] for info in cursor.fetchall()]
-            if 'token_expires_at' not in columns:
+            columns_api = [info[1] for info in cursor.fetchall()]
+            if 'token_expires_at' not in columns_api:
+                print("Adicionando coluna 'token_expires_at' em api_config (SQLite)...")
                 cursor.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
-            
-            # Tabela rules
+                conn.commit() # Commit após alteração
+        else: # PostgreSQL
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS api_config (
+                    id SERIAL PRIMARY KEY, name TEXT NOT NULL, app_id TEXT NOT NULL,
+                    app_secret TEXT NOT NULL, access_token TEXT NOT NULL, account_id TEXT NOT NULL,
+                    business_id TEXT, page_id TEXT, is_active INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, token_expires_at DATE
+                )
+            ''')
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'api_config' AND column_name = 'token_expires_at';
+            """)
+            column_exists_api = cursor.fetchone()
+            if not column_exists_api:
+                print("Adicionando coluna 'token_expires_at' em api_config (PostgreSQL)...")
+                try:
+                    cursor.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
+                    conn.commit() # Commit após alteração
+                except psycopg2.Error as e_alter_api:
+                    conn.rollback()
+                    if "already exists" in str(e_alter_api).lower(): print("Coluna token_expires_at já existe (ignorado).")
+                    else: print(f"Erro add coluna token_expires_at: {e_alter_api}")
+
+
+        # --- Tabela rules (MODIFICADA PARA INCLUIR NOVOS CAMPOS) ---
+        print("Verificando/Atualizando tabela 'rules'...")
+        rules_columns_to_add = {
+            "execution_mode": "TEXT DEFAULT 'manual'",
+            "execution_interval_hours": "INTEGER",
+            "last_automatic_run_at": "TIMESTAMP WITH TIME ZONE" if conn_type == "postgres" else "TIMESTAMP"
+        }
+
+        if conn_type == "sqlite":
+            cursor.execute(f'''
                 CREATE TABLE IF NOT EXISTS rules (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    condition_type TEXT NOT NULL,
-                    is_composite INTEGER DEFAULT 0,
-                    primary_metric TEXT NOT NULL,
-                    primary_operator TEXT NOT NULL,
-                    primary_value REAL NOT NULL,
-                    secondary_metric TEXT,
-                    secondary_operator TEXT,
-                    secondary_value REAL,
-                    join_operator TEXT DEFAULT 'AND',
-                    action_type TEXT NOT NULL,
-                    action_value REAL,
+                    name TEXT NOT NULL, description TEXT, condition_type TEXT NOT NULL,
+                    is_composite INTEGER DEFAULT 0, primary_metric TEXT NOT NULL,
+                    primary_operator TEXT NOT NULL, primary_value REAL NOT NULL,
+                    secondary_metric TEXT, secondary_operator TEXT, secondary_value REAL,
+                    join_operator TEXT DEFAULT 'AND', action_type TEXT NOT NULL, action_value REAL,
                     is_active INTEGER DEFAULT 1,
+                    execution_mode TEXT DEFAULT 'manual', -- NOVO
+                    execution_interval_hours INTEGER, -- NOVO
+                    last_automatic_run_at TIMESTAMP, -- NOVO
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
-            # Tabela rule_executions
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS rule_executions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    rule_id INTEGER NOT NULL,
-                    ad_object_id TEXT NOT NULL,
-                    ad_object_type TEXT NOT NULL,
-                    ad_object_name TEXT NOT NULL,
-                    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    was_successful INTEGER DEFAULT 0,
-                    message TEXT,
-                    FOREIGN KEY (rule_id) REFERENCES rules (id) ON DELETE CASCADE
-                )
-            ''')
-        else:
-            # PostgreSQL original
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS api_config (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    app_id TEXT NOT NULL,
-                    app_secret TEXT NOT NULL,
-                    access_token TEXT NOT NULL,
-                    account_id TEXT NOT NULL,
-                    business_id TEXT,
-                    page_id TEXT,
-                    is_active INTEGER DEFAULT 0,
-                    last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    token_expires_at DATE
-                )
-            ''')
-            
-            cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = 'api_config' AND column_name = 'token_expires_at';
-            """)
-            column_exists = cursor.fetchone()
-            if not column_exists:
-                try:
-                    cursor.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
-                except Exception as e_alter:
-                    conn.rollback()
-                    if "already exists" not in str(e_alter):
-                        print(f"Erro ao adicionar coluna: {e_alter}")
-            
-            cursor.execute('''
+            cursor.execute("PRAGMA table_info(rules)")
+            existing_columns_rules = [info[1] for info in cursor.fetchall()]
+            columns_added_sqlite = False
+            for col_name, col_type_def in rules_columns_to_add.items():
+                 sql_type = col_type_def # Usa a definição padrão
+                 if col_name == 'last_automatic_run_at' and conn_type == 'sqlite': sql_type = 'TIMESTAMP'
+                 if col_name == 'execution_mode' and conn_type == 'sqlite': sql_type = "TEXT DEFAULT 'manual'"
+
+                 if col_name not in existing_columns_rules:
+                     print(f"Adicionando coluna '{col_name}' à tabela 'rules' (SQLite)...")
+                     cursor.execute(f'ALTER TABLE rules ADD COLUMN {col_name} {sql_type}')
+                     columns_added_sqlite = True
+            if columns_added_sqlite: conn.commit() # Commit se adicionou colunas
+
+        else: # PostgreSQL
+            cursor.execute(f'''
                 CREATE TABLE IF NOT EXISTS rules (
                     id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    condition_type TEXT NOT NULL,
-                    is_composite INTEGER DEFAULT 0,
-                    primary_metric TEXT NOT NULL,
-                    primary_operator TEXT NOT NULL,
-                    primary_value REAL NOT NULL,
-                    secondary_metric TEXT,
-                    secondary_operator TEXT,
-                    secondary_value REAL,
-                    join_operator TEXT DEFAULT 'AND',
-                    action_type TEXT NOT NULL,
-                    action_value REAL,
+                    name TEXT NOT NULL, description TEXT, condition_type TEXT NOT NULL,
+                    is_composite INTEGER DEFAULT 0, primary_metric TEXT NOT NULL,
+                    primary_operator TEXT NOT NULL, primary_value REAL NOT NULL,
+                    secondary_metric TEXT, secondary_operator TEXT, secondary_value REAL,
+                    join_operator TEXT DEFAULT 'AND', action_type TEXT NOT NULL, action_value REAL,
                     is_active INTEGER DEFAULT 1,
+                    execution_mode TEXT DEFAULT 'manual', -- NOVO
+                    execution_interval_hours INTEGER, -- NOVO
+                    last_automatic_run_at TIMESTAMP WITH TIME ZONE, -- NOVO (com timezone)
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
-            cursor.execute('''
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'rules';
+            """)
+            existing_columns_rules = [row[0] for row in cursor.fetchall()]
+            for col_name, col_type_def in rules_columns_to_add.items():
+                 if col_name not in existing_columns_rules:
+                     print(f"Adicionando coluna '{col_name}' à tabela 'rules' (PostgreSQL)...")
+                     try:
+                         cursor.execute(f'ALTER TABLE rules ADD COLUMN {col_name} {col_type_def}')
+                         conn.commit() # Commit após cada ALTER TABLE para segurança
+                     except psycopg2.Error as e_alter_rules:
+                         conn.rollback()
+                         if "already exists" in str(e_alter_rules).lower(): print(f"Coluna '{col_name}' já existe (ignorado).")
+                         else: print(f"Erro add coluna {col_name}: {e_alter_rules}")
+
+
+        # --- Tabela rule_executions (sem alterações aqui, mantenha como está no seu código original) ---
+        if conn_type == "sqlite":
+             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rule_executions (
-                    id SERIAL PRIMARY KEY,
-                    rule_id INTEGER NOT NULL,
-                    ad_object_id TEXT NOT NULL,
-                    ad_object_type TEXT NOT NULL,
-                    ad_object_name TEXT NOT NULL,
-                    executed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    was_successful INTEGER DEFAULT 0,
-                    message TEXT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER NOT NULL, ad_object_id TEXT NOT NULL,
+                    ad_object_type TEXT NOT NULL, ad_object_name TEXT NOT NULL,
+                    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, was_successful INTEGER DEFAULT 0, message TEXT,
                     FOREIGN KEY (rule_id) REFERENCES rules (id) ON DELETE CASCADE
                 )
-            ''')
-        
-        conn.commit()
-    except Exception as e:
+             ''')
+        else: # PostgreSQL
+             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rule_executions (
+                    id SERIAL PRIMARY KEY, rule_id INTEGER NOT NULL, ad_object_id TEXT NOT NULL,
+                    ad_object_type TEXT NOT NULL, ad_object_name TEXT NOT NULL,
+                    executed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, was_successful INTEGER DEFAULT 0, message TEXT,
+                    FOREIGN KEY (rule_id) REFERENCES rules (id) ON DELETE CASCADE
+                )
+             ''')
+
+        # Não precisa de commit final aqui, pois fizemos commit após cada ALTER TABLE
+
+        print("Verificação/Atualização do schema do DB concluída.")
+
+    except (psycopg2.Error, sqlite3.Error, Exception) as e: # Adiciona sqlite3.Error
+        error_type = type(e).__name__
+        print(f"Erro Crítico durante init_db ({error_type}): {e}\n{traceback.format_exc()}")
+        st.error(f"Erro CRÍTICO ao inicializar/atualizar o banco de dados: {e}")
         try:
-            conn.rollback()
-        except:
-            pass
-        st.error(f"Erro ao criar tabelas: {e}")
+            if conn: conn.rollback() # Tenta reverter
+            print("Rollback realizado devido a erro na inicialização.")
+        except Exception as rb_err:
+            print(f"Erro durante o rollback na inicialização: {rb_err}")
+
     finally:
         if cursor:
             cursor.close()
@@ -721,60 +733,84 @@ def get_facebook_campaigns_cached(account_id_from_main):
 # --- Funções de Regras (Adaptadas para PostgreSQL) ---
 def add_rule(name, description, primary_metric, primary_operator,
              primary_value, action_type, action_value, is_composite=0, secondary_metric=None,
-             secondary_operator=None, secondary_value=None, join_operator="AND"):
+             secondary_operator=None, secondary_value=None, join_operator="AND",
+             execution_mode='manual', execution_interval_hours=None): # Novos parâmetros com default
     """Adiciona uma nova regra ao banco de dados."""
     conn_info = get_db_connection()
     if conn_info is None:
+        st.error("Falha ao obter conexão com DB para adicionar regra.") # Mensagem para UI
         return False
-    
+
     conn, conn_type = conn_info
     cursor = None
     success = False
-    
+
     try:
         cursor = conn.cursor()
-        
-        # SQLite e PostgreSQL têm sintaxes diferentes para placeholders
+
+        # Limpa o intervalo se o modo for manual, garantindo consistência
+        if execution_mode == 'manual':
+            execution_interval_hours = None
+        # Garante que intervalo seja um número ou None
+        elif execution_interval_hours is not None:
+            try:
+                execution_interval_hours = int(execution_interval_hours)
+            except (ValueError, TypeError):
+                print(f"AVISO [add_rule]: Intervalo inválido recebido ({execution_interval_hours}), definindo como None.")
+                execution_interval_hours = None # Define como None se não for um inteiro válido
+
+        # Query adaptada para incluir novos campos
         if conn_type == "sqlite":
             query = """
                 INSERT INTO rules
                 (name, description, condition_type, is_composite, primary_metric,
                  primary_operator, primary_value, secondary_metric, secondary_operator,
-                 secondary_value, join_operator, action_type, action_value, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 secondary_value, join_operator, action_type, action_value,
+                 execution_mode, execution_interval_hours, -- Novos campos
+                 updated_at, created_at) -- Adicionado created_at para consistência
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) -- 16 placeholders
             """
-        else:
+        else: # PostgreSQL
             query = """
                 INSERT INTO rules
                 (name, description, condition_type, is_composite, primary_metric,
                  primary_operator, primary_value, secondary_metric, secondary_operator,
-                 secondary_value, join_operator, action_type, action_value, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                 secondary_value, join_operator, action_type, action_value,
+                 execution_mode, execution_interval_hours, -- Novos campos
+                 updated_at, created_at) -- Adicionado created_at para consistência
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) -- 16 placeholders
             """
-            
+
         params = (
             name, description, "custom", is_composite, primary_metric,
             primary_operator, primary_value, secondary_metric, secondary_operator,
-            secondary_value, join_operator, action_type, action_value
+            secondary_value, join_operator, action_type, action_value,
+            execution_mode, # Novo
+            execution_interval_hours # Novo
         )
-        
-        cursor.execute(query, params)
-        conn.commit()
-        get_all_rules_cached.clear()
-        success = True
-        
-    except Exception as e:
-        try:
-            conn.rollback()
-        except:
-            pass
-        print(f"Erro ao adicionar regra: {e}")
+
+        # Usar execute_query para consistência no tratamento de erros e placeholders
+        rowcount = execute_query(query, params, is_dml=True)
+
+        # execute_query adaptada retorna rowcount (>=0) ou None em caso de erro
+        if rowcount is not None and rowcount > 0:
+             success = True
+             get_all_rules_cached.clear() # Limpa cache para UI atualizar
+             print(f"Regra '{name}' adicionada com modo '{execution_mode}'.")
+        elif rowcount == 0:
+             print(f"AVISO [add_rule]: Insert da regra '{name}' não afetou linhas.")
+             # Pode não ser um erro fatal, mas é estranho.
+        else: # rowcount is None (erro ocorreu dentro de execute_query)
+             success = False
+             # O erro já foi logado/mostrado por execute_query
+
+    except Exception as e: # Captura erro geral se execute_query falhar antes
+        print(f"Erro GERAL ao adicionar regra: {e}\n{traceback.format_exc()}")
+        st.error(f"Erro inesperado ao adicionar regra: {e}") # Para UI
         success = False
-        
-    finally:
-        if cursor:
-            cursor.close()
-            
+
+    # Não precisa fechar cursor ou conexão aqui, execute_query (e get_db_connection) cuidam disso
+
     return success
 
 @st.cache_data(ttl=60)
@@ -1399,148 +1435,112 @@ def show_rule_form():
         "halve_budget": "Reduzir orçamento pela metade",
         "custom_budget_multiplier": "Multiplicar orçamento por valor"
     }
+    # NOVO: Opções de intervalo
+    INTERVAL_OPTIONS = {
+        1: "A cada 1 Hora", 3: "A cada 3 Horas", 6: "A cada 6 Horas",
+        12: "A cada 12 Horas", 24: "A cada 24 Horas"
+    }
 
-    # Inicializa variáveis de sessão
-    if 'rule_form_is_composite' not in st.session_state: 
-        st.session_state.rule_form_is_composite = False
-    if 'rule_form_primary_metric' not in st.session_state: 
-        st.session_state.rule_form_primary_metric = 'cpa'
-    if 'rule_form_secondary_metric' not in st.session_state: 
-        st.session_state.rule_form_secondary_metric = 'purchases'
-    if 'rule_form_action_type' not in st.session_state: 
-        st.session_state.rule_form_action_type = 'pause_campaign'
+    # Inicializa variáveis de sessão (incluindo as novas)
+    if 'rule_form_is_composite' not in st.session_state: st.session_state.rule_form_is_composite = False
+    if 'rule_form_primary_metric' not in st.session_state: st.session_state.rule_form_primary_metric = 'cpa'
+    if 'rule_form_secondary_metric' not in st.session_state: st.session_state.rule_form_secondary_metric = 'purchases'
+    if 'rule_form_action_type' not in st.session_state: st.session_state.rule_form_action_type = 'pause_campaign'
+    if 'rule_form_execution_mode' not in st.session_state: st.session_state.rule_form_execution_mode = 'manual' # NOVO
+    if 'rule_form_interval' not in st.session_state: st.session_state.rule_form_interval = 6 # NOVO (default 6 horas)
+
 
     is_composite = st.checkbox("Usar duas condições (regra composta)", key='rule_form_is_composite')
 
-    # Seleção de métricas FORA do formulário para permitir rerun imediato
     st.markdown("##### Selecione as Métricas")
-    
     col1_m, col2_m = st.columns(2)
     with col1_m:
         st.markdown("**1ª Condição:**")
-        # Usar session_state como chave para manter o valor selecionado
-        primary_metric = st.selectbox("Métrica Primária", 
-                                     options=list(METRIC_OPTIONS.keys()), 
-                                     format_func=lambda x: METRIC_OPTIONS[x],
-                                     key='rule_form_primary_metric')
-    
-    # Inicializar secondary_metric com valor padrão
+        primary_metric = st.selectbox("Métrica Primária", options=list(METRIC_OPTIONS.keys()), format_func=lambda x: METRIC_OPTIONS[x], key='rule_form_primary_metric')
     secondary_metric = st.session_state.rule_form_secondary_metric
-    
     with col2_m:
         if is_composite:
             st.markdown("**2ª Condição:**")
-            secondary_metric = st.selectbox("Métrica Secundária", 
-                                          options=list(METRIC_OPTIONS.keys()),
-                                          format_func=lambda x: METRIC_OPTIONS[x],
-                                          key='rule_form_secondary_metric')
-        else:
-            st.markdown("") # Espaço vazio para manter alinhamento
+            secondary_metric = st.selectbox("Métrica Secundária", options=list(METRIC_OPTIONS.keys()),format_func=lambda x: METRIC_OPTIONS[x], key='rule_form_secondary_metric')
+        else: st.markdown("")
 
     join_operator = "AND"
     if is_composite:
-        join_operator = st.radio(
-            "Operador de Junção:", ["AND", "OR"], index=0, horizontal=True,
-            format_func=lambda x: {"AND": "E (ambas verdadeiras)", "OR": "OU (uma ou ambas verdadeiras)"}.get(x),
-            key="rule_form_join_operator"
-        )
+        join_operator = st.radio( "Operador de Junção:", ["AND", "OR"], index=0, horizontal=True, format_func=lambda x: {"AND": "E (ambas)", "OR": "OU (uma ou ambas)"}.get(x), key="rule_form_join_operator")
 
-    # Determinar os tipos de métrica fora do formulário
+    # Determina tipos de métrica (float ou int)
     is_float_primary = primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
     is_float_secondary = False
-    if is_composite:
-        is_float_secondary = secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+    if is_composite: is_float_secondary = secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
 
-    # Agora o formulário sem seleção de métricas
+    # Inicia o formulário
     with st.form("new_rule_form"):
         name = st.text_input("Nome da Regra*", key="rule_form_name")
         description = st.text_area("Descrição (Opcional)", height=80, key="rule_form_description")
 
         st.markdown("---")
         st.markdown("##### Condições")
-
-        # Exibe a métrica selecionada no formulário (sem seleção)
         st.markdown(f"**1ª Condição: {METRIC_OPTIONS[primary_metric]}**")
         col1_p, col2_p = st.columns([1, 2])
-        
         with col1_p:
-            primary_operator = st.selectbox("Operador", 
-                                           options=list(OPERATOR_OPTIONS.keys()), 
-                                           format_func=lambda x: OPERATOR_OPTIONS[x], 
-                                           key="rule_form_primary_operator")
+            primary_operator = st.selectbox("Operador", options=list(OPERATOR_OPTIONS.keys()), format_func=lambda x: OPERATOR_OPTIONS[x], key="rule_form_primary_operator")
         with col2_p:
-            # Usar is_float_primary para determinar o tipo de campo
-            if is_float_primary:
-                label = "Valor (R$)*" if primary_metric in ['cpa', 'cpc', 'spend'] else "Valor*"
-                primary_value = st.number_input(
-                    label,
-                    min_value=0.0 if primary_metric != 'roas' else None,
-                    step=0.01, 
-                    format="%.2f", 
-                    key=f"rule_form_primary_value_float_{primary_metric}"
-                )
-            else:
-                primary_value = st.number_input(
-                    "Quantidade*", 
-                    min_value=0,
-                    step=1, 
-                    format="%d", 
-                    key=f"rule_form_primary_value_int_{primary_metric}"
-                )
+            label_p = "Valor (R$)*" if primary_metric in ['cpa', 'cpc', 'spend'] else ("Valor*" if is_float_primary else "Quantidade*")
+            step_p = 0.01 if is_float_primary else 1
+            format_p = "%.2f" if is_float_primary else "%d"
+            # Usar uma chave única que muda com a métrica para evitar conflitos de valor
+            primary_value = st.number_input(label_p, min_value=0.0 if primary_metric != 'roas' else None, step=step_p, format=format_p, key=f"rule_form_primary_value_{primary_metric}")
 
         secondary_operator = None
         secondary_value = None
-        
         if is_composite:
             st.markdown(f"**2ª Condição: {METRIC_OPTIONS[secondary_metric]}**")
             col1_s, col2_s = st.columns([1, 2])
-            
             with col1_s:
-                secondary_operator = st.selectbox("Operador", 
-                                                options=list(OPERATOR_OPTIONS.keys()), 
-                                                format_func=lambda x: OPERATOR_OPTIONS[x], 
-                                                key="rule_form_secondary_operator")
+                secondary_operator = st.selectbox("Operador", options=list(OPERATOR_OPTIONS.keys()), format_func=lambda x: OPERATOR_OPTIONS[x], key="rule_form_secondary_operator")
             with col2_s:
-                # Usar is_float_secondary para determinar o tipo de campo
-                if is_float_secondary:
-                    label = "Valor (R$)*" if secondary_metric in ['cpa', 'cpc', 'spend'] else "Valor*"
-                    secondary_value = st.number_input(
-                        label,
-                        min_value=0.0 if secondary_metric != 'roas' else None,
-                        step=0.01, 
-                        format="%.2f", 
-                        key=f"rule_form_secondary_value_float_{secondary_metric}"
-                    )
-                else:
-                    secondary_value = st.number_input(
-                        "Quantidade*", 
-                        min_value=0,
-                        step=1, 
-                        format="%d", 
-                        key=f"rule_form_secondary_value_int_{secondary_metric}"
-                    )
+                label_s = "Valor (R$)*" if secondary_metric in ['cpa', 'cpc', 'spend'] else ("Valor*" if is_float_secondary else "Quantidade*")
+                step_s = 0.01 if is_float_secondary else 1
+                format_s = "%.2f" if is_float_secondary else "%d"
+                # Chave única também para o valor secundário
+                secondary_value = st.number_input(label_s, min_value=0.0 if secondary_metric != 'roas' else None, step=step_s, format=format_s, key=f"rule_form_secondary_value_{secondary_metric}")
 
         st.markdown("---")
         st.markdown("##### Ação a Executar")
         col1_a, col2_a = st.columns(2)
         with col1_a:
-            action_type = st.selectbox("Tipo de Ação*", options=list(ACTION_OPTIONS.keys()), 
-                                      format_func=lambda x: ACTION_OPTIONS[x], 
-                                      key='rule_form_action_type')
+            action_type = st.selectbox("Tipo de Ação*", options=list(ACTION_OPTIONS.keys()), format_func=lambda x: ACTION_OPTIONS[x], key='rule_form_action_type')
         with col2_a:
             action_value = None
             if action_type == "custom_budget_multiplier":
-                action_value = st.number_input("Multiplicador*", 
-                                              min_value=0.1, 
-                                              value=1.2, 
-                                              step=0.1, 
-                                              format="%.2f", 
-                                              key="rule_form_action_value", 
-                                              help="Ex: 1.2 para aumentar 20%, 0.8 para diminuir 20%")
+                action_value = st.number_input("Multiplicador*", min_value=0.1, value=1.2, step=0.1, format="%.2f", key="rule_form_action_value", help="Ex: 1.2 para aumentar 20%")
+
+        # --- NOVO: Configuração de Execução ---
+        st.markdown("---")
+        st.markdown("##### Modo de Execução")
+        execution_mode = st.radio(
+            "Como executar esta regra?",
+            options=['manual', 'automatic'],
+            format_func=lambda x: {'manual': 'Manualmente (pelo botão "Aplicar")', 'automatic': 'Automaticamente (agendada)'}.get(x),
+            key='rule_form_execution_mode', # Usa a session_state aqui
+            horizontal=True
+        )
+
+        interval_hours = None # Garante que é None se não for automático
+        if execution_mode == 'automatic':
+            interval_hours = st.selectbox(
+                "Executar a cada:",
+                options=list(INTERVAL_OPTIONS.keys()),
+                format_func=lambda x: INTERVAL_OPTIONS[x],
+                key='rule_form_interval', # Usa a session_state aqui
+                help="Com que frequência o sistema deve verificar e aplicar esta regra automaticamente?"
+            )
+        # --- FIM NOVO ---
 
         st.markdown("---")
         st.markdown("##### Resumo da Regra (Pré-visualização)")
         try:
+            # Lógica de formatação do resumo (igual ao anterior)
             val1_fmt = f"{float(primary_value):.2f}" if is_float_primary else str(int(primary_value))
             rule_summary = f"**SE** {METRIC_OPTIONS.get(primary_metric, '?')} {OPERATOR_OPTIONS.get(primary_operator, '?')} {val1_fmt} "
             if is_composite and secondary_metric and secondary_operator and secondary_value is not None:
@@ -1550,30 +1550,46 @@ def show_rule_form():
             if action_type == "custom_budget_multiplier":
                 action_text_summary += f" ({float(action_value):.2f})" if action_value is not None else " (valor?)"
             rule_summary += f"**ENTÃO** {action_text_summary}"
-            st.markdown(rule_summary)
-        except (ValueError, TypeError):
+            # Adiciona modo de execução ao resumo
+            if execution_mode == 'automatic' and interval_hours:
+                 rule_summary += f".<br>**MODO:** Automático ({INTERVAL_OPTIONS.get(interval_hours, '?')})"
+            else:
+                 rule_summary += ".<br>**MODO:** Manual"
+            st.markdown(rule_summary, unsafe_allow_html=True) # unsafe_allow_html para o <br>
+        except (ValueError, TypeError, AttributeError): # AttributeError se primary_value for None inicialmente
             st.caption("Aguardando valores válidos para gerar resumo...")
 
+        # Botão de submit do formulário
         submitted = st.form_submit_button("💾 Criar Regra", use_container_width=True)
         if submitted:
             error = False
             if not name: st.error("O nome da regra é obrigatório."); error = True
-            # number_input garante que valor não é None, mas pode ser 0
+            # Verifica se os valores numéricos são válidos (não None)
+            if primary_value is None: st.error("O valor da 1ª condição é obrigatório."); error = True
             if is_composite and secondary_value is None: st.error("O valor da 2ª condição é obrigatório para regras compostas."); error = True
             if action_type == "custom_budget_multiplier" and action_value is None: st.error("O valor multiplicador é obrigatório para esta ação."); error = True
+            if execution_mode == 'automatic' and interval_hours is None: st.error("Selecione um intervalo para execução automática."); error = True # NOVO
 
             if not error:
                 final_primary_value = float(primary_value)
                 final_secondary_value = float(secondary_value) if is_composite and secondary_value is not None else None
                 final_action_value = float(action_value) if action_type == "custom_budget_multiplier" and action_value is not None else None
 
-                if add_rule(name, description, primary_metric, primary_operator, final_primary_value,
-                            action_type, final_action_value, 1 if is_composite else 0, secondary_metric,
-                            secondary_operator, final_secondary_value, join_operator):
+                # Passa os novos valores para add_rule
+                if add_rule(
+                    name=name, description=description,
+                    primary_metric=primary_metric, primary_operator=primary_operator, primary_value=final_primary_value,
+                    action_type=action_type, action_value=final_action_value,
+                    is_composite=1 if is_composite else 0,
+                    secondary_metric=secondary_metric, secondary_operator=secondary_operator, secondary_value=final_secondary_value,
+                    join_operator=join_operator,
+                    execution_mode=execution_mode, # NOVO
+                    execution_interval_hours=interval_hours # NOVO
+                    ):
                     st.success("✅ Regra criada com sucesso!")
-                    st.session_state.show_rule_form = False
-                    time.sleep(1)
-                    st.rerun()
+                    st.session_state.show_rule_form = False # Esconde o form
+                    time.sleep(1) # Pequena pausa para o usuário ver a mensagem
+                    st.rerun() # Recarrega a página para mostrar a nova regra na lista
                 else:
                     st.error("❌ Falha ao salvar a regra no banco de dados.")
             else:
@@ -2021,38 +2037,52 @@ def show_gerenciador_page():
             st.markdown("##### Regras Existentes")
             rules = get_all_rules_cached()
             if rules:
+                # NOVO: Dicionário para formatar intervalo
+                INTERVAL_OPTIONS_DISPLAY = {
+                    1: "A cada 1 Hora", 3: "A cada 3 Horas", 6: "A cada 6 Horas",
+                    12: "A cada 12 Horas", 24: "A cada 24 Horas"
+                }
                 for rule in rules:
-                    # ... (Cole o loop de exibição das regras exatamente como estava na versão anterior) ...
                     if not isinstance(rule, dict): continue
                     rule_id = rule.get('id')
                     if not rule_id: continue
 
                     is_active = bool(rule.get("is_active", False))
-                    rule_text = format_rule_text(rule)
+                    rule_text = format_rule_text(rule) # Sua função que formata a condição/ação
+
+                    # --- NOVO: Obter dados de execução ---
+                    exec_mode = rule.get("execution_mode", "manual") # Assume manual se não existir
+                    interval_h = rule.get("execution_interval_hours")
+                    mode_text = ""
+                    if exec_mode == 'automatic':
+                        interval_desc = INTERVAL_OPTIONS_DISPLAY.get(interval_h, f"{interval_h}h (Inválido?)" if interval_h else "Intervalo?")
+                        mode_text = f"<span style='font-size: 0.8em; color: #17a2b8;'> |  मोडो: Automático ({interval_desc})</span>"
+                    else:
+                        mode_text = "<span style='font-size: 0.8em; color: #6c757d;'> | मोडो: Manual</span>"
+                    # --- FIM NOVO ---
 
                     with st.container(border=True):
                         col_rule_desc, col_rule_actions = st.columns([4, 1])
 
                         with col_rule_desc:
-                            # Definir a parte HTML fora da f-string
                             inactive_span = '<span style="font-size: 0.8em; color: #999;">(Inativa)</span>'
-                            st.markdown(f"**{rule.get('name', 'Regra sem nome')}** {inactive_span if not is_active else ''}", unsafe_allow_html=True)
+                            # Adiciona mode_text ao lado do nome
+                            st.markdown(f"**{rule.get('name', 'Regra sem nome')}** {inactive_span if not is_active else ''}{mode_text}", unsafe_allow_html=True)
                             st.markdown(f"<small>{rule_text}</small>", unsafe_allow_html=True)
                             if rule.get("description"):
                                 st.caption(f"Descrição: {rule.get('description')}")
 
                         with col_rule_actions:
-                            new_toggle_state = st.toggle(
-                                "Ativa", value=is_active, key=f"toggle_{rule_id}", label_visibility="visible"
-                            )
+                            # Botão Toggle (sem alteração)
+                            new_toggle_state = st.toggle("Ativa", value=is_active, key=f"toggle_{rule_id}")
                             if new_toggle_state != is_active:
                                 if toggle_rule_status(rule_id, new_toggle_state):
                                      st.toast(f"Regra '{rule.get('name')}' {'ativada' if new_toggle_state else 'desativada'}.", icon="✅" if new_toggle_state else "⏸️")
                                      time.sleep(0.5); st.rerun()
                                 else:
                                      st.toast(f"Erro ao alterar status da regra '{rule.get('name')}'.", icon="❌")
-
-                            if st.button("🗑️ Excluir", key=f"delete_rule_{rule_id}", type="secondary", help="Excluir esta regra permanentemente", use_container_width=True):
+                            # Botão Excluir (sem alteração)
+                            if st.button("🗑️ Excluir", key=f"delete_rule_{rule_id}", type="secondary", help="Excluir esta regra", use_container_width=True):
                                 if delete_rule(rule_id):
                                     st.success(f"Regra '{rule.get('name')}' excluída!")
                                     st.rerun()
@@ -2060,7 +2090,6 @@ def show_gerenciador_page():
                                      st.error(f"Erro ao excluir a regra '{rule.get('name')}'.")
             else:
                 st.info("Nenhuma regra criada ainda. Clique em '➕ Nova Regra' para começar.")
-
 
         # ==========================
         # Aba 3: Configurações
