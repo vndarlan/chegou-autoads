@@ -2082,7 +2082,7 @@ def show_gerenciador_page():
                     st.markdown("##### Adicionar Nova Conta")
                     with st.form("add_api_config_form_tab3"):
                         # ... (Cole os campos do formulário exatamente como estavam na versão anterior, incluindo st.date_input) ...
-                        name_add = st.text_input("Nome daConta*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
+                        name_add = st.text_input("Nome da Conta*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
                         acc_id_add = st.text_input("Account ID* (somente números)", key="add_account_id_tab3", help="ID da sua conta de anúncios, sem 'act_' (ex: 1234567890)")
                         app_id_add = st.text_input("App ID*", key="add_app_id_tab3", help="ID do seu Aplicativo no Facebook Developers")
                         app_secret_add = st.text_input("App Secret*", type="password", key="add_app_secret_tab3", help="Chave secreta do seu App do Facebook")
