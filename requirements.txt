@@ -3,3 +3,4 @@ pandas
 numpy
 facebook-business
 psycopg2-binary # Driver PostgreSQL
+folium

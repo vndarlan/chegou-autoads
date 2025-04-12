@@ -399,25 +399,76 @@ def get_all_api_configs():
     return configs
 
 def set_active_api_config(config_id):
-    """Define uma configuração como ativa no PostgreSQL."""
-    # Usando a função genérica execute_query
-    conn = get_db_connection()
-    if conn is None: return False
+    conn_info = get_db_connection()
+    if conn_info is None:
+        st.error("Falha ao obter conexão com o banco de dados para definir config ativa.")
+        return False
+
+    conn, conn_type = conn_info
+
     success = False
+    cursor = None
+
     try:
-        with conn.cursor() as cur:
-            # Desativa todas primeiro
-            cur.execute("UPDATE api_config SET is_active = 0")
-            # Ativa a selecionada
-            cur.execute("UPDATE api_config SET is_active = 1 WHERE id = %s", (config_id,))
-            conn.commit()
-            success = cur.rowcount > 0
-    except PgError as e:
-        conn.rollback()
-        st.error(f"Erro ao definir configuração ativa: {e}")
-    except Exception as e:
-        conn.rollback()
-        st.error(f"Erro inesperado em set_active_api_config: {e}")
+        if conn_type == "postgres":
+            connection_closed = getattr(conn, 'closed', False)
+            if connection_closed:
+                st.warning("Conexão PostgreSQL estava fechada. Tentando reconectar...")
+                get_db_connection.clear()
+                conn_info = get_db_connection()
+                if conn_info is None:
+                     st.error("Falha ao reconectar ao banco de dados.")
+                     if cursor:
+                         try:
+                             cursor.close()
+                         except Exception:
+                             pass
+                     return False
+                conn, conn_type = conn_info
+                if cursor:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+                cursor = conn.cursor()
+
+        if cursor is None:
+            cursor = conn.cursor()
+
+        if conn_type == "sqlite":
+            sql_deactivate = "UPDATE api_config SET is_active = 0"
+            sql_activate = "UPDATE api_config SET is_active = 1 WHERE id = ?"
+            params_activate = (config_id,)
+        else:
+            sql_deactivate = "UPDATE api_config SET is_active = 0"
+            sql_activate = "UPDATE api_config SET is_active = 1 WHERE id = %s"
+            params_activate = (config_id,)
+
+        cursor.execute(sql_deactivate)
+        cursor.execute(sql_activate, params_activate)
+
+        conn.commit()
+        success = cursor.rowcount > 0
+
+    except (PgError, Exception) as e:
+        error_type = type(e).__name__
+        st.error(f"Erro ({error_type}) ao definir configuração ativa: {e}")
+        print(f"Erro detalhado em set_active_api_config: {traceback.format_exc()}")
+
+        if conn:
+            try:
+                conn.rollback()
+                print("Rollback da transação realizado.")
+            except Exception as rb_err:
+                print(f"Erro durante o rollback da transação: {rb_err}")
+        success = False
+
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception as cur_close_err:
+                print(f"Erro ao fechar o cursor: {cur_close_err}")
 
     return success
 
@@ -1022,6 +1073,79 @@ def get_rule_executions_cached(limit=20):
             
     return executions_list
 
+def get_rule_executions_by_date(start_date, end_date):
+    """
+    Busca execuções de regras dentro de um intervalo de datas específico.
+
+    Args:
+        start_date (datetime.date): A data de início do intervalo.
+        end_date (datetime.date): A data de fim do intervalo.
+
+    Returns:
+        list: Uma lista de dicionários representando as execuções encontradas,
+              ou uma lista vazia se ocorrer um erro ou nada for encontrado.
+    """
+    conn_info = get_db_connection()
+    if conn_info is None:
+        st.error("Falha na conexão com o DB para buscar histórico por data.")
+        return []
+
+    conn, conn_type = conn_info
+    executions_list = []
+    cursor = None
+
+    try:
+        cursor = conn.cursor()
+
+        # --- IMPORTANTE: Ajuste para incluir o dia final completo ---
+        # Adiciona 1 dia ao end_date para a comparação ser "menor que o dia seguinte"
+        # Isso garante que todos os registros do end_date sejam incluídos.
+        end_date_adjusted = end_date + timedelta(days=1)
+
+        # Query base (igual à da função cacheada, mas sem LIMIT)
+        query_base = """
+            SELECT re.id, r.name as rule_name, re.rule_id, re.ad_object_id, re.ad_object_type,
+                   re.ad_object_name, re.executed_at, re.was_successful, re.message
+            FROM rule_executions re
+            LEFT JOIN rules r ON re.rule_id = r.id
+        """
+
+        # Adiciona a condição WHERE para filtrar por data
+        # Atenção aos placeholders (%s ou ?)
+        if conn_type == "sqlite":
+            query = f"{query_base} WHERE re.executed_at >= ? AND re.executed_at < ? ORDER BY re.executed_at DESC"
+            params = (start_date, end_date_adjusted)
+        else: # PostgreSQL
+            # Assume que executed_at é TIMESTAMP WITH TIME ZONE ou similar
+            query = f"{query_base} WHERE re.executed_at >= %s AND re.executed_at < %s ORDER BY re.executed_at DESC"
+            params = (start_date, end_date_adjusted)
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        if rows:
+            columns = ["id", "rule_name", "rule_id", "ad_object_id", "ad_object_type",
+                       "ad_object_name", "executed_at", "was_successful", "message"]
+            for row in rows:
+                execution_dict = dict(zip(columns, row))
+                # Lógica para nome da regra (se excluída)
+                if execution_dict.get("rule_name") is None and execution_dict.get("rule_id"):
+                    execution_dict["rule_name"] = f"Regra ID {execution_dict['rule_id']} (Excluída)"
+                elif execution_dict.get("rule_name") is None:
+                    execution_dict["rule_name"] = "Regra Desconhecida"
+                executions_list.append(execution_dict)
+
+    except (PgError, Exception) as e:
+        st.error(f"Erro ao buscar histórico por data: {e}")
+        print(f"Erro detalhado em get_rule_executions_by_date: {traceback.format_exc()}")
+        executions_list = [] # Retorna lista vazia em caso de erro
+
+    finally:
+        if cursor:
+            cursor.close()
+
+    return executions_list
+
 
 # --- Funções de Execução e Simulação de Regras ---
 # NENHUMA ALTERAÇÃO necessária aqui, pois elas dependem das funções de DB/API já adaptadas.
@@ -1529,14 +1653,17 @@ def show_gerenciador_page():
     # Tenta inicializar/verificar o DB PostgreSQL ao carregar a página
     init_db()
 
-    # Obter configurações (ativas e todas) do PostgreSQL
+        # Obter configurações (ativas e todas) do PostgreSQL
     active_config = get_active_api_config()
     all_configs = get_all_api_configs()
 
-    col_selector_label, col_selector_widget = st.columns([1, 3])
-    with col_selector_label:
-        st.markdown("#### Conta Ativa:")
-    with col_selector_widget:
+    # --- BLOCO MODIFICADO ---
+    # Criar colunas: uma grande vazia à esquerda e uma menor à direita para o seletor
+    col_empty_space, col_selector_widget = st.columns([3, 1]) # Proporção invertida para empurrar para direita
+
+    # A coluna 'col_selector_label' e o 'st.markdown("#### Conta Ativa:")' foram REMOVIDOS.
+
+    with col_selector_widget: # Coloca o seletor na coluna da direita (menor)
         if all_configs:
             config_options = {cfg['id']: f"{cfg['name']} ({cfg['account_id']})" for cfg in all_configs}
             active_config_id = active_config['id'] if active_config else None
@@ -1547,17 +1674,19 @@ def show_gerenciador_page():
                 except ValueError: default_index = 0
 
             selected_config_id = st.selectbox(
-                "Selecione a conta para gerenciar:",
+                "Conta:", # Label interno mais curto (não visível)
                 options=list(config_options.keys()),
                 format_func=lambda x: config_options.get(x, f"ID {x} Inválido"),
                 index=default_index,
-                label_visibility="collapsed"
+                label_visibility="collapsed", # Garante que o label não apareça
+                key="account_selector" # Adiciona uma chave única
             )
 
             if selected_config_id != active_config_id:
                 if set_active_api_config(selected_config_id):
                      st.toast(f"Conta '{config_options.get(selected_config_id, 'Selecionada')}' ativada!", icon="🔄")
-                     get_db_connection.clear() # Limpa cache da conexão DB tbm por segurança
+                     # Limpeza de cache aprimorada (inclui config ativa e todas as configs)
+                     get_db_connection.clear()
                      get_facebook_campaigns_cached.clear()
                      get_campaign_insights_cached.clear()
                      get_all_rules_cached.clear()
@@ -1567,15 +1696,14 @@ def show_gerenciador_page():
                 else:
                      st.error("Falha ao ativar a conta.")
                      st.stop()
-            active_config = get_active_api_config() # Re-fetch config ativa
+            # Não precisa re-fetch active_config aqui, o rerun() cuida disso.
 
-        elif not active_config and get_db_connection() is not None: # Se DB conectou mas não há configs
-             st.info("Nenhuma conta configurada. Adicione uma na aba '🔧 Configurações'.")
+        elif not active_config and get_db_connection() is not None:
+             # Mostra o aviso dentro da coluna pequena para manter o alinhamento
+             st.info("Nenhuma conta configurada...")
         elif get_db_connection() is None:
-             st.warning("⚠️ Não foi possível conectar ao banco de dados. Verifique as configurações e logs do Railway.")
-
-
-    st.markdown("---")
+             # Mostra o aviso dentro da coluna pequena
+             st.warning("⚠️ DB offline.")
 
     if not active_config and get_db_connection() is not None:
         st.warning("⚠️ Nenhuma conta do Facebook Ads está ativa. Vá para a aba '🔧 Configurações' para adicionar ou ativar uma conta.")
@@ -1646,7 +1774,7 @@ def show_gerenciador_page():
                         col_h[3].markdown("<div style='text-align: center;'><b>Compras</b></div>", unsafe_allow_html=True)
                         col_h[4].markdown("<div style='text-align: center;'><b>ROAS</b></div>", unsafe_allow_html=True)
                         col_h[5].markdown("<div style='text-align: center;'><b>Ação Rápida</b></div>", unsafe_allow_html=True)
-                        col_h[6].markdown("**Regras Aplicáveis (Simulação)**")
+                        col_h[6].markdown("**Regras Aplicáveis**")
                         st.markdown("<hr style='margin: 0.1rem 0;'>", unsafe_allow_html=True)
 
                         # Loop
@@ -1804,26 +1932,72 @@ def show_gerenciador_page():
                             st.markdown("<hr style='margin: 0.3rem 0;'>", unsafe_allow_html=True)
 
 
-                # --- Histórico de Execuções --- (Código igual ao anterior)
+                # --- Histórico de Execuções (COM FILTRO DE DATA) ---
                 st.markdown("---")
-                st.markdown("##### Histórico Recente de Execuções (Últimas 15)")
-                executions = get_rule_executions_cached(15)
+                st.markdown("##### Histórico de Execuções")
+
+                # Widgets para seleção de data
+                col_date1, col_date2, col_info = st.columns([1, 1, 2])
+                with col_date1:
+                    start_date_filter = st.date_input(
+                        "Data Início",
+                        value=date.today(), # Padrão: hoje
+                        key="exec_start_date"
+                    )
+                with col_date2:
+                    end_date_filter = st.date_input(
+                        "Data Fim",
+                        value=date.today(), # Padrão: hoje
+                        key="exec_end_date"
+                    )
+
+                executions = [] # Inicializa a lista de execuções
+                if start_date_filter and end_date_filter:
+                    if start_date_filter > end_date_filter:
+                        with col_info:
+                            # Adiciona espaço vertical para alinhar com date_input
+                            st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+                            st.warning("Data de início não pode ser maior que a data fim.")
+                    else:
+                        # Chama a NOVA função para buscar por data
+                        executions = get_rule_executions_by_date(start_date_filter, end_date_filter)
+                        # Mensagem sobre o período na coluna de informação
+                        with col_info:
+                            st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True) # Alinhamento
+                            if start_date_filter == end_date_filter:
+                                st.caption(f"Exibindo execuções de {start_date_filter.strftime('%d/%m/%Y')}.")
+                            else:
+                                st.caption(f"Exibindo execuções de {start_date_filter.strftime('%d/%m/%Y')} até {end_date_filter.strftime('%d/%m/%Y')}.")
+
+                # Exibição da tabela (ou mensagem se não houver dados)
                 if executions:
                     exec_df_data = []
                     for ex in executions:
                          if not isinstance(ex, dict): continue
+                         # Formatação dos dados para o DataFrame (igual ao que você já tinha)
                          exec_df_data.append({
                               "Status": "✅ Sucesso" if ex.get("was_successful") else "❌ Falha",
                               "Regra": ex.get("rule_name", "N/A"),
                               "Alvo": f"{ex.get('ad_object_type', '').capitalize()}: {ex.get('ad_object_name', 'N/A')[:30]}...",
                               "Mensagem": ex.get("message", "")[:50] + ('...' if len(ex.get('message', '')) > 50 else ''),
-                              "Horário": pd.to_datetime(ex.get("executed_at")).strftime('%d/%m %H:%M:%S %Z') if ex.get("executed_at") else "N/A" # Inclui segundos e TZ
+                              "Horário": pd.to_datetime(ex.get("executed_at")).strftime('%d/%m/%Y %H:%M:%S') # Inclui data completa
                          })
                     if exec_df_data:
                         exec_df = pd.DataFrame(exec_df_data)
-                        st.dataframe(exec_df, use_container_width=True, hide_index=True, height=300)
-                    else: st.info("Nenhuma execução de regra válida encontrada no histórico recente.")
-                else: st.info("Nenhuma execução de regra registrada recentemente.")
+                        # Ordena pelo horário real (datetime) antes de exibir, decrescente
+                        exec_df['Horário_DT'] = pd.to_datetime(exec_df['Horário'], format='%d/%m/%Y %H:%M:%S')
+                        exec_df = exec_df.sort_values(by='Horário_DT', ascending=False).drop(columns=['Horário_DT'])
+
+                        st.dataframe(exec_df, use_container_width=True, hide_index=True, height=350) # Aumentei um pouco a altura
+                    else:
+                        # Isso não deveria acontecer se 'executions' tem dados, mas por segurança
+                        st.info("Nenhuma execução válida encontrada para o período selecionado.")
+                # Se 'executions' ficou vazio (após a busca ou por data inválida)
+                elif start_date_filter and end_date_filter and start_date_filter <= end_date_filter:
+                     st.info(f"Nenhuma execução de regra encontrada entre {start_date_filter.strftime('%d/%m/%Y')} e {end_date_filter.strftime('%d/%m/%Y')}.")
+                # Se as datas não foram selecionadas (não deve acontecer com valor padrão, mas por segurança)
+                elif not (start_date_filter and end_date_filter):
+                    st.info("Selecione as datas de início e fim para ver o histórico.")
 
         # ==========================
         # Aba 2: Regras
@@ -1908,13 +2082,13 @@ def show_gerenciador_page():
                     st.markdown("##### Adicionar Nova Conta")
                     with st.form("add_api_config_form_tab3"):
                         # ... (Cole os campos do formulário exatamente como estavam na versão anterior, incluindo st.date_input) ...
-                        name_add = st.text_input("Nome da Conexão*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
+                        name_add = st.text_input("Nome daConta*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
                         acc_id_add = st.text_input("Account ID* (somente números)", key="add_account_id_tab3", help="ID da sua conta de anúncios, sem 'act_' (ex: 1234567890)")
                         app_id_add = st.text_input("App ID*", key="add_app_id_tab3", help="ID do seu Aplicativo no Facebook Developers")
                         app_secret_add = st.text_input("App Secret*", type="password", key="add_app_secret_tab3", help="Chave secreta do seu App do Facebook")
                         access_token_add = st.text_area("Access Token*", key="add_access_token_tab3", height=100, help="Token de acesso de LONGA DURAÇÃO com permissões ads_read e ads_management")
                         token_expires_at_add = st.date_input(
-                            "Data de Vencimento do Token (Opcional)", value=None, min_value=date.today(),
+                            "Data de Vencimento do Token", value=None, min_value=date.today(),
                             help="Selecione a data em que o token de acesso expira. Ajuda a lembrar de renovar.",
                             key="add_token_expires_at_tab3"
                         )
