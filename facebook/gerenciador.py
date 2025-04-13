@@ -816,47 +816,67 @@ def add_rule(name, description, primary_metric, primary_operator,
 
 @st.cache_data(ttl=60)
 def get_all_rules_cached():
-    """Busca todas as regras do banco de dados (cacheado)."""
+    """Busca todas as regras do banco de dados (cacheado), incluindo modo de execução."""
+    print("DEBUG: Executando get_all_rules_cached...") # Log para ver se está sendo chamada
     conn_info = get_db_connection()
     if conn_info is None:
+        st.error("Falha ao obter conexão com DB para buscar regras.")
         return []
-    
+
     conn, conn_type = conn_info
     rules_list = []
     cursor = None
-    
+
     try:
         cursor = conn.cursor()
-        
+
+        # Query SQL - *** CORRIGIDA PARA INCLUIR AS NOVAS COLUNAS ***
         query = """
-            SELECT id, name, description, condition_type, is_composite,
-                   primary_metric, primary_operator, primary_value,
-                   secondary_metric, secondary_operator, secondary_value,
-                   join_operator, action_type, action_value, is_active,
-                   created_at, updated_at
+            SELECT
+                id, name, description, condition_type, is_composite,
+                primary_metric, primary_operator, primary_value,
+                secondary_metric, secondary_operator, secondary_value,
+                join_operator, action_type, action_value, is_active,
+                execution_mode, execution_interval_hours, last_automatic_run_at, -- <<< NOVAS COLUNAS AQUI
+                created_at, updated_at
             FROM rules
             ORDER BY created_at DESC
         """
-        
+
         cursor.execute(query)
         rows = cursor.fetchall()
-        
+        print(f"DEBUG: get_all_rules_cached encontrou {len(rows)} linhas.") # Log
+
         if rows:
-            columns = ["id", "name", "description", "condition_type", "is_composite",
-                       "primary_metric", "primary_operator", "primary_value",
-                       "secondary_metric", "secondary_operator", "secondary_value",
-                       "join_operator", "action_type", "action_value", "is_active",
-                       "created_at", "updated_at"]
+            # Lista de Nomes de Colunas - *** CORRIGIDA PARA INCLUIR AS NOVAS COLUNAS ***
+            # A ORDEM DEVE SER EXATAMENTE A MESMA DO SELECT ACIMA!
+            columns = [
+                "id", "name", "description", "condition_type", "is_composite",
+                "primary_metric", "primary_operator", "primary_value",
+                "secondary_metric", "secondary_operator", "secondary_value",
+                "join_operator", "action_type", "action_value", "is_active",
+                "execution_mode", "execution_interval_hours", "last_automatic_run_at", # <<< NOVAS COLUNAS AQUI
+                "created_at", "updated_at"
+            ]
+
             for row in rows:
-                rules_list.append(dict(zip(columns, row)))
-    
-    except Exception as e:
-        print(f"Erro ao buscar regras: {e}")
-        
+                # Cria o dicionário mapeando nome da coluna para valor da linha
+                rule_dict = dict(zip(columns, row))
+                # Debug: Imprime o dicionário para ver se os novos campos estão lá
+                # print(f"DEBUG: Rule Dict: {rule_dict}")
+                rules_list.append(rule_dict)
+
+    except (PgError, sqlite3.Error, Exception) as e: # Captura erros
+        error_type = type(e).__name__
+        print(f"Erro ao buscar regras ({error_type}): {e}")
+        st.error(f"Erro ao buscar regras do banco de dados: {e}") # Mostra erro na UI
+
     finally:
         if cursor:
             cursor.close()
-            
+        # Não fecha a conexão principal aqui (gerenciada pelo cache)
+
+    print(f"DEBUG: get_all_rules_cached retornando {len(rules_list)} regras.") # Log
     return rules_list
 
 @st.cache_data(ttl=60)
