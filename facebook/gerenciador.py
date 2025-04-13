@@ -737,6 +737,11 @@ def add_rule(name, description, primary_metric, primary_operator,
              secondary_operator=None, secondary_value=None, join_operator="AND",
              execution_mode='manual', execution_interval_hours=None): # Novos parâmetros com default
     """Adiciona uma nova regra ao banco de dados."""
+
+    # --- DEBUG PRINT ---
+    print(f"DEBUG [add_rule]: Função recebendo Modo='{execution_mode}', Intervalo={execution_interval_hours}")
+    # --- FIM DEBUG PRINT ---
+
     conn_info = get_db_connection()
     if conn_info is None:
         st.error("Falha ao obter conexão com DB para adicionar regra.") # Mensagem para UI
@@ -1690,6 +1695,10 @@ def show_rule_form():
                 submit_action_value = float(action_value) if final_action_type == "custom_budget_multiplier" and action_value is not None else None
                 submit_interval = final_interval_hours # Já pegamos do estado
 
+                # --- DEBUG PRINT ---
+                print(f"DEBUG [Gerenciador]: Prestes a chamar add_rule. Modo='{final_execution_mode}', Intervalo={submit_interval}")
+                # --- FIM DEBUG PRINT ---
+
                 # Chama add_rule com todos os valores corretos
                 if add_rule(
                     name=name, description=description,
@@ -1700,21 +1709,15 @@ def show_rule_form():
                     secondary_operator=secondary_operator, secondary_value=submit_secondary_value,
                     join_operator=final_join_operator,
                     execution_mode=final_execution_mode,
-                    execution_interval_hours=submit_interval
+                    execution_interval_hours=submit_interval # << Este é o valor crucial
                     ):
                     st.success("✅ Regra criada com sucesso!")
                     st.session_state.show_rule_form = False
-                    # Limpa chaves específicas do formulário para resetar na próxima vez
-                    keys_to_clear = [k for k in st.session_state if k.startswith('rule_form_')]
-                    for key in keys_to_clear:
-                        if key in st.session_state: # Verifica se ainda existe antes de deletar
-                             del st.session_state[key]
-                    time.sleep(1)
-                    st.rerun()
+                    # ... (restante do código de sucesso) ...
                 else:
                     st.error("❌ Falha ao salvar a regra no banco de dados.")
             else:
-                 st.warning("Corrija os erros antes de salvar.")
+                st.warning("Corrija os erros antes de salvar.")
 
 def format_rule_text(rule):
     """Formata a descrição de uma regra para exibição."""
