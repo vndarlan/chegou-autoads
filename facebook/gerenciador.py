@@ -1649,7 +1649,7 @@ def show_rule_form():
             resumo_join_operator = st.session_state.get('rule_form_join_operator', 'AND')
             resumo_execution_mode = st.session_state.get('rule_form_execution_mode', 'manual')
             # Lê o intervalo diretamente do ESTADO DA SESSÃO para o resumo
-            resumo_interval_hours = st.session_state.get('rule_form_interval')
+            resumo_interval_hours = interval_hours_widget
 
             # Verifica se o valor primário é float
             resumo_is_float_p = resumo_primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
