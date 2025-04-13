@@ -1461,7 +1461,7 @@ def show_rule_form():
         12: "A cada 12 Horas", 24: "A cada 24 Horas"
     }
 
-    # Inicializa variáveis de sessão
+    # Inicializa variáveis de sessão se não existirem
     st.session_state.setdefault('rule_form_is_composite', False)
     st.session_state.setdefault('rule_form_primary_metric', 'cpa')
     st.session_state.setdefault('rule_form_secondary_metric', 'purchases')
@@ -1469,8 +1469,14 @@ def show_rule_form():
     st.session_state.setdefault('rule_form_execution_mode', 'manual')
     st.session_state.setdefault('rule_form_interval', 6)
     st.session_state.setdefault('rule_form_join_operator', 'AND')
-    st.session_state.setdefault(f"rule_form_primary_value_{st.session_state.rule_form_primary_metric}", 0.0 if st.session_state.rule_form_primary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend'] else 0)
-    st.session_state.setdefault(f"rule_form_secondary_value_{st.session_state.rule_form_secondary_metric}", 0.0 if st.session_state.rule_form_secondary_metric in ['cpa', 'roas', 'cpc', 'ctr', 'spend'] else 0)
+    # Inicializa valores numéricos para as chaves dinâmicas (NECESSÁRIO)
+    # Faz isso ANTES dos widgets serem criados
+    current_pm = st.session_state.rule_form_primary_metric
+    current_sm = st.session_state.rule_form_secondary_metric
+    is_float_p = current_pm in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+    is_float_s = current_sm in ['cpa', 'roas', 'cpc', 'ctr', 'spend']
+    st.session_state.setdefault(f"rule_form_primary_value_{current_pm}", 0.0 if is_float_p else 0)
+    st.session_state.setdefault(f"rule_form_secondary_value_{current_sm}", 0.0 if is_float_s else 0)
     st.session_state.setdefault("rule_form_action_value", 1.2)
 
 
@@ -1524,8 +1530,9 @@ def show_rule_form():
     with st.form("new_rule_form"):
         st.markdown("---")
         st.markdown("##### Detalhes da Regra")
-        name = st.text_input("Nome da Regra*", key="rule_form_name")
-        description = st.text_area("Descrição (Opcional)", height=80, key="rule_form_description")
+        # Usa st.session_state.get para fornecer valor inicial seguro
+        name = st.text_input("Nome da Regra*", key="rule_form_name", value=st.session_state.get("rule_form_name", ""))
+        description = st.text_area("Descrição (Opcional)", height=80, key="rule_form_description", value=st.session_state.get("rule_form_description", ""))
 
         st.markdown("---")
         st.markdown("##### Condições (Valores)")
@@ -1544,11 +1551,10 @@ def show_rule_form():
             if current_primary_metric == 'roas': min_val_p = None
             elif is_float_primary: min_val_p = 0.0
             else: min_val_p = 0
-            default_primary_value = 0.0 if is_float_primary else 0
+            # *** CORREÇÃO AQUI: REMOVIDO argumento 'value' ***
             primary_value = st.number_input(
                 label_p, min_value=min_val_p, step=step_p, format=format_p,
-                key=primary_value_key,
-                value=st.session_state.get(primary_value_key, default_primary_value)
+                key=primary_value_key # Confia na chave e no setdefault
             )
 
         secondary_operator = None
@@ -1569,38 +1575,39 @@ def show_rule_form():
                 if current_secondary_metric == 'roas': min_val_s = None
                 elif is_float_secondary: min_val_s = 0.0
                 else: min_val_s = 0
-                default_secondary_value = 0.0 if is_float_secondary else 0
+                # *** CORREÇÃO AQUI: REMOVIDO argumento 'value' ***
                 secondary_value = st.number_input(
                     label_s, min_value=min_val_s, step=step_s, format=format_s,
-                    key=secondary_value_key,
-                    value=st.session_state.get(secondary_value_key, default_secondary_value)
+                    key=secondary_value_key # Confia na chave e no setdefault
                 )
 
         st.markdown("---")
         st.markdown("##### Ação a Executar")
         col1_a, col2_a = st.columns(2)
-        current_action_type = st.session_state.rule_form_action_type # Lê do estado
+        # Usa st.session_state.get para o índice do selectbox
+        action_options_list = list(ACTION_OPTIONS.keys())
+        try:
+            action_default_index = action_options_list.index(st.session_state.rule_form_action_type)
+        except ValueError:
+            action_default_index = 0 # Default para o primeiro se não encontrar
+
         with col1_a:
-             # *** CORREÇÃO AQUI: Remove 'disabled=True' ***
              action_type_widget = st.selectbox(
-                "Tipo de Ação*", options=list(ACTION_OPTIONS.keys()),
+                "Tipo de Ação*", options=action_options_list,
                 format_func=lambda x: ACTION_OPTIONS[x],
-                key='rule_form_action_type' # Mantém a chave para ler/escrever estado
-                # disabled=True # REMOVIDO!
+                key='rule_form_action_type',
+                index=action_default_index # Define o índice baseado no estado
                 )
-             # Atualiza a variável local se o widget foi alterado
-             current_action_type = action_type_widget
+             current_action_type = action_type_widget # Atualiza variável local
 
         with col2_a:
             action_value = None
-            # Mostra baseado na ação SELECIONADA AGORA (lida do widget acima)
             if current_action_type == "custom_budget_multiplier":
                 action_value_key = "rule_form_action_value"
-                default_action_value = st.session_state.get(action_value_key, 1.2) # Usa get para default
+                # *** CORREÇÃO AQUI: REMOVIDO argumento 'value' ***
                 action_value = st.number_input(
                     "Multiplicador*", min_value=0.1, step=0.1, format="%.2f",
-                    key=action_value_key,
-                    value=default_action_value, # Usa o valor lido/default
+                    key=action_value_key, # Confia na chave e no setdefault
                     help="Ex: 1.2 para aumentar 20%"
                     )
 
@@ -1612,10 +1619,11 @@ def show_rule_form():
             interval_key = 'rule_form_interval'
             options_list = list(INTERVAL_OPTIONS.keys())
             try:
-                 current_interval_value = st.session_state.get(interval_key, options_list[2])
+                 # Usa get() para evitar erro se a chave não existir ainda
+                 current_interval_value = st.session_state.get(interval_key, 6) # Default para 6h
                  default_index = options_list.index(current_interval_value)
             except (ValueError, IndexError):
-                 default_index = 2
+                 default_index = 2 # Índice de 6h
 
             interval_hours = st.selectbox(
                 "Executar a cada:", options=options_list,
@@ -1626,22 +1634,22 @@ def show_rule_form():
 
         st.markdown("---")
         st.markdown("##### Resumo da Regra (Pré-visualização)")
-        # (Lógica do resumo - usa current_action_type lido do widget)
+        # (Lógica do resumo - como antes, mas leia valores de entrada dos widgets locais)
         try:
-            if primary_value is not None:
-                 val1_fmt = f"{float(primary_value):.2f}" if is_float_primary else str(int(primary_value))
-                 rule_summary = f"**SE** {METRIC_OPTIONS[current_primary_metric]} {OPERATOR_OPTIONS.get(primary_operator, '?')} {val1_fmt} "
-            else: rule_summary = "**SE** [Valor 1 Pendente] "
+            # Precisa ler os valores atuais dos widgets (que podem ser None se erro)
+            pv = primary_value if primary_value is not None else (0.0 if is_float_primary else 0)
+            sv = secondary_value if secondary_value is not None else (0.0 if is_float_secondary else 0)
+            av = action_value if action_value is not None else 1.2 # Usa um default para o resumo
 
+            val1_fmt = f"{float(pv):.2f}" if is_float_primary else str(int(pv))
+            rule_summary = f"**SE** {METRIC_OPTIONS[current_primary_metric]} {OPERATOR_OPTIONS.get(primary_operator, '?')} {val1_fmt} "
             if is_composite:
-                if secondary_operator and secondary_value is not None:
-                     val2_fmt = f"{float(secondary_value):.2f}" if is_float_secondary else str(int(secondary_value))
-                     rule_summary += f"**{st.session_state.rule_form_join_operator}** {METRIC_OPTIONS[current_secondary_metric]} {OPERATOR_OPTIONS.get(secondary_operator, '?')} {val2_fmt} "
-                else: rule_summary += f"**{st.session_state.rule_form_join_operator}** [Valor 2 Pendente] "
+                 val2_fmt = f"{float(sv):.2f}" if is_float_secondary else str(int(sv))
+                 rule_summary += f"**{st.session_state.rule_form_join_operator}** {METRIC_OPTIONS[current_secondary_metric]} {OPERATOR_OPTIONS.get(secondary_operator, '?')} {val2_fmt} "
 
-            action_text_summary = ACTION_OPTIONS.get(current_action_type, '?') # Usa a variável atualizada
+            action_text_summary = ACTION_OPTIONS.get(current_action_type, '?')
             if current_action_type == "custom_budget_multiplier":
-                 action_text_summary += f" ({float(action_value):.2f})" if action_value is not None else " (valor?)"
+                 action_text_summary += f" ({float(av):.2f})"
             rule_summary += f"**ENTÃO** {action_text_summary}"
 
             if current_execution_mode == 'automatic' and interval_hours:
@@ -1652,22 +1660,23 @@ def show_rule_form():
         except (ValueError, TypeError, AttributeError) as e:
              st.caption("Aguardando valores válidos para gerar resumo...")
 
-
         # --- Botão de Submit ---
         submitted = st.form_submit_button("💾 Criar Regra", use_container_width=True)
         if submitted:
             # --- Validação e Submissão ---
-            # (Lógica de validação usa as variáveis lidas/atualizadas DENTRO do form e do estado)
+            # Lê os valores FINAIS do estado da sessão e das variáveis do formulário
             final_execution_mode = st.session_state.rule_form_execution_mode
-            final_interval_hours = interval_hours
-            final_action_type = current_action_type # Usa o valor do widget lido no form
+            # Lê o valor do intervalo diretamente do estado da sessão APÓS submit
+            final_interval_hours = st.session_state.get('rule_form_interval') if final_execution_mode == 'automatic' else None
+            final_action_type = st.session_state.rule_form_action_type # O selectbox atualizou o estado
             final_is_composite = st.session_state.rule_form_is_composite
             final_primary_metric = st.session_state.rule_form_primary_metric
             final_secondary_metric = st.session_state.rule_form_secondary_metric
             final_join_operator = st.session_state.rule_form_join_operator
 
+            # Os valores numéricos vêm das variáveis locais do form: primary_value, secondary_value, action_value
+            # A validação precisa usar essas variáveis locais
             error = False
-            # (Validações como antes)
             if not name: st.error("O nome da regra é obrigatório."); error = True
             if primary_value is None : st.error("O valor da 1ª condição é obrigatório."); error = True
             if final_is_composite and secondary_value is None: st.error("O valor da 2ª condição é obrigatório."); error = True
@@ -1675,12 +1684,13 @@ def show_rule_form():
             if final_execution_mode == 'automatic' and final_interval_hours is None: st.error("Selecione um intervalo para execução automática."); error = True
 
             if not error:
+                # Prepara os valores numéricos FINAIS lidos dos widgets do form
                 submit_primary_value = float(primary_value)
                 submit_secondary_value = float(secondary_value) if final_is_composite and secondary_value is not None else None
                 submit_action_value = float(action_value) if final_action_type == "custom_budget_multiplier" and action_value is not None else None
-                submit_interval = final_interval_hours if final_execution_mode == 'automatic' else None
+                submit_interval = final_interval_hours # Já pegamos do estado
 
-                # Chama add_rule com os valores FINAIS
+                # Chama add_rule com todos os valores corretos
                 if add_rule(
                     name=name, description=description,
                     primary_metric=final_primary_metric, primary_operator=primary_operator, primary_value=submit_primary_value,
@@ -1694,8 +1704,11 @@ def show_rule_form():
                     ):
                     st.success("✅ Regra criada com sucesso!")
                     st.session_state.show_rule_form = False
+                    # Limpa chaves específicas do formulário para resetar na próxima vez
                     keys_to_clear = [k for k in st.session_state if k.startswith('rule_form_')]
-                    for key in keys_to_clear: del st.session_state[key]
+                    for key in keys_to_clear:
+                        if key in st.session_state: # Verifica se ainda existe antes de deletar
+                             del st.session_state[key]
                     time.sleep(1)
                     st.rerun()
                 else:
