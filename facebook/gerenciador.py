@@ -381,6 +381,7 @@ def save_api_config(name, app_id, app_secret, access_token, account_id, business
         if cursor:
             cursor.close()
 
+@st.cache_data(ttl=60)
 def get_active_api_config():
     """Obtém a configuração ativa do PostgreSQL."""
     query = """
@@ -396,6 +397,7 @@ def get_active_api_config():
         return dict(zip(keys, row))
     return None
 
+@st.cache_data(ttl=60)
 def get_all_api_configs():
     """Obtém todas as configurações do PostgreSQL."""
     query = """
