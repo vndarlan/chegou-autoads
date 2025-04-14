@@ -319,6 +319,8 @@ def init_db():
         if cursor:
             cursor.close()
 
+init_db()
+
 def save_api_config(name, app_id, app_secret, access_token, account_id, business_id="", page_id="", token_expires_at=None):
     """Salva a configuração da API no banco de dados."""
     # Verifica quantas configs existem para definir is_active
@@ -415,65 +417,72 @@ def get_all_api_configs():
     return configs
 
 def set_active_api_config(config_id):
+    """
+    Define a configuração de API especificada como ativa no banco de dados.
+    (Versão Otimizada: sem limpar cache de conexão e sem st.rerun explícito)
+    """
+    print(f"DEBUG: set_active_api_config chamada para ID: {config_id}") # Log para depuração
     conn_info = get_db_connection()
     if conn_info is None:
         st.error("Falha ao obter conexão com o banco de dados para definir config ativa.")
         return False
 
     conn, conn_type = conn_info
-
     success = False
     cursor = None
 
     try:
+        # Verificar se a conexão está aberta (especialmente para PG)
         if conn_type == "postgres":
-            connection_closed = getattr(conn, 'closed', False)
+            # Verifica se conn.closed não é 0 (está fechada)
+            connection_closed = getattr(conn, 'closed', 0) != 0
             if connection_closed:
-                st.warning("Conexão PostgreSQL estava fechada. Tentando reconectar...")
+                st.warning("Conexão PG estava fechada ao tentar definir config ativa. Tentando reconectar...")
+                # Limpa APENAS o cache da conexão se ela ESTAVA fechada
                 get_db_connection.clear()
                 conn_info = get_db_connection()
                 if conn_info is None:
                      st.error("Falha ao reconectar ao banco de dados.")
-                     if cursor:
-                         try:
-                             cursor.close()
-                         except Exception:
-                             pass
                      return False
                 conn, conn_type = conn_info
-                if cursor:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-                cursor = conn.cursor()
+                # Não precisa criar cursor aqui ainda
 
-        if cursor is None:
-            cursor = conn.cursor()
+        # Criar cursor agora que temos certeza que a conexão está (ou deveria estar) aberta
+        cursor = conn.cursor()
 
+        print(f"DEBUG: Desativando todas as configs...")
+        # Desativa todas as outras configs
         if conn_type == "sqlite":
             sql_deactivate = "UPDATE api_config SET is_active = 0"
+            cursor.execute(sql_deactivate)
+        else: # PostgreSQL
+            sql_deactivate = "UPDATE api_config SET is_active = 0"
+            cursor.execute(sql_deactivate)
+        print(f"DEBUG: {cursor.rowcount} configs desativadas.")
+
+        print(f"DEBUG: Ativando config ID {config_id}...")
+        # Ativa a config selecionada
+        if conn_type == "sqlite":
             sql_activate = "UPDATE api_config SET is_active = 1 WHERE id = ?"
             params_activate = (config_id,)
-        else:
-            sql_deactivate = "UPDATE api_config SET is_active = 0"
+            cursor.execute(sql_activate, params_activate)
+        else: # PostgreSQL
             sql_activate = "UPDATE api_config SET is_active = 1 WHERE id = %s"
             params_activate = (config_id,)
+            cursor.execute(sql_activate, params_activate)
 
-        cursor.execute(sql_deactivate)
-        cursor.execute(sql_activate, params_activate)
-
-        conn.commit()
+        conn.commit() # Confirma as alterações (desativar e ativar)
+        # Verifica se o UPDATE de ativação afetou alguma linha
         success = cursor.rowcount > 0
+        print(f"DEBUG: Config ID {config_id} ativada? {'Sim' if success else 'Não'}. Linhas afetadas: {cursor.rowcount}")
 
-    except (PgError, Exception) as e:
+    except (PgError, sqlite3.Error, Exception) as e: # Inclui sqlite3.Error
         error_type = type(e).__name__
         st.error(f"Erro ({error_type}) ao definir configuração ativa: {e}")
         print(f"Erro detalhado em set_active_api_config: {traceback.format_exc()}")
-
         if conn:
             try:
-                conn.rollback()
+                conn.rollback() # Tenta reverter em caso de erro
                 print("Rollback da transação realizado.")
             except Exception as rb_err:
                 print(f"Erro durante o rollback da transação: {rb_err}")
@@ -485,6 +494,10 @@ def set_active_api_config(config_id):
                 cursor.close()
             except Exception as cur_close_err:
                 print(f"Erro ao fechar o cursor: {cur_close_err}")
+        # NÃO fechamos a conexão principal aqui, ela é gerenciada pelo @st.cache_resource
+
+    # A limpeza de cache e o st.rerun devem acontecer DEPOIS que esta função
+    # for chamada com sucesso, lá na parte do selectbox da interface.
 
     return success
 
@@ -1757,13 +1770,6 @@ def format_rule_text(rule):
 # ==============================================================================
 def show_gerenciador_page():
     """Renderiza a página completa do Gerenciador de Anúncios."""
-
-    # Usa JavaScript para modificar a largura após a página carregar (se necessário)
-    # st.markdown(...) # Seu código de script para largura aqui, se usar
-
-    # Tenta inicializar/verificar o DB ao carregar a página
-    init_db()
-
     # Obter configurações (ativas e todas)
     active_config = get_active_api_config()
     all_configs = get_all_api_configs()
