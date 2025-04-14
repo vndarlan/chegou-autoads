@@ -28,32 +28,129 @@ except ImportError as import_err:
 
 # Exemplo de get_db_connection_worker (COLE A SUA VERSÃO COMPLETA)
 def get_db_connection_worker():
-    # ... (código para conectar ao DB - igual ao anterior) ...
-    print("INFO [Worker]: Tentando obter conexão com DB...")
+    """Obtém uma conexão com o banco de dados (VERSÃO WORKER)."""
+    print("INFO [Worker DB]: Tentando obter conexão com DB...")
     pg_host = os.getenv("PGHOST")
-    # ... (restante do código da função) ...
-    # Retorna (conn, conn_type) ou (None, None)
-    # ... COLOQUE SUA FUNÇÃO COMPLETA AQUI ...
-    # Exemplo simplificado:
-    try:
-        # ... lógica de conexão pg ...
-        # return conn, "postgres"
-        pass # Substitua pela sua lógica real
-    except:
-        # ... lógica de fallback ou erro ...
-        # return None, None
-        pass # Substitua pela sua lógica real
-    return None, None # Placeholder
+    pg_user = os.getenv("PGUSER")
+    pg_password = os.getenv("PGPASSWORD")
+    pg_port = os.getenv("PGPORT") # Garanta que PGPORT está presente
+    pg_database = os.getenv("PGDATABASE") # Garanta que PGDATABASE está presente
 
+    # Verifica se todas as variáveis PG existem
+    if not all([pg_host, pg_user, pg_password, pg_port, pg_database]):
+        print("ERRO [Worker DB]: Faltam variáveis de ambiente PostgreSQL (PGHOST, PGUSER, PGPASSWORD, PGPORT, PGDATABASE).")
+        # Tentar SQLite como fallback? Ou apenas falhar? Vamos falhar por clareza.
+        # Remover bloco SQLite se não for usá-lo no worker.
+        # try:
+        #     print("AVISO [Worker DB]: Tentando fallback para SQLite...")
+        #     # ... (lógica SQLite se necessário) ...
+        # except Exception as e_sql:
+        #      print(f"ERRO [Worker DB]: Falha ao conectar ao SQLite: {e_sql}")
+        #      return None, None
+        return None, None # Falha se faltar variável PG
+
+    # Tentar conectar ao PostgreSQL
+    try:
+        conn = psycopg2.connect(
+            host=pg_host,
+            port=pg_port,
+            database=pg_database,
+            user=pg_user,
+            password=pg_password
+        )
+        conn.autocommit = True # Importante para DML simples no worker
+        print("INFO [Worker DB]: Conexão PostgreSQL estabelecida.")
+        return conn, "postgres"
+    except PgError as e_pg:
+        print(f"ERRO [Worker DB]: Falha ao conectar ao PostgreSQL: {e_pg}")
+        print(f"  Detalhes: Host={pg_host}, Port={pg_port}, DB={pg_database}, User={pg_user}")
+        return None, None
+    except Exception as e:
+        print(f"ERRO CRÍTICO [Worker DB]: Erro inesperado na conexão: {e}")
+        return None, None
+
+def close_connection_worker(conn_info):
+    """Fecha a conexão com o banco de dados (VERSÃO WORKER)."""
+    if conn_info is None or conn_info[0] is None:
+        return
+    conn, conn_type = conn_info
+    try:
+        conn.close()
+        # print(f"DEBUG [Worker DB]: Conexão {conn_type} fechada.")
+    except Exception as e:
+        print(f"AVISO [Worker DB]: Erro ao fechar conexão {conn_type}: {e}")
 
 # Exemplo de execute_query (COLE A SUA VERSÃO COMPLETA)
 def execute_query(query, params=None, fetch_one=False, fetch_all=False, is_dml=False):
-    # ... (código para executar query - igual ao anterior) ...
+    """Executa uma query no banco de dados (VERSÃO WORKER)."""
     conn_info = get_db_connection_worker()
-    # ... (restante do código da função) ...
-    # Retorna resultado ou None
-    # ... COLOQUE SUA FUNÇÃO COMPLETA AQUI ...
-    return None # Placeholder
+    if conn_info is None or conn_info[0] is None:
+        print(f"ERRO [Execute Query]: Falha ao obter conexão com DB para query: {query[:50]}...")
+        return None # Retorna None se não conseguiu conectar
+
+    conn, conn_type = conn_info
+    result = None
+    cursor = None
+
+    try:
+        # Verificar se a conexão está fechada (para PostgreSQL)
+        if conn_type == "postgres":
+            if getattr(conn, 'closed', 0) != 0: # Verifica se conn.closed não é 0 (está fechada)
+                print("AVISO [Execute Query]: Conexão PG estava fechada. Tentando reabrir...")
+                close_connection_worker(conn_info) # Fecha formalmente se possível
+                conn_info = get_db_connection_worker() # Tenta conectar novamente
+                if conn_info is None or conn_info[0] is None:
+                    print("ERRO [Execute Query]: Falha ao reabrir conexão.")
+                    return None
+                conn, conn_type = conn_info
+
+        cursor = conn.cursor()
+
+        # Adapta placeholders (%s vs ?) - essencial se usar SQLite como fallback
+        adapted_query = query
+        if params is not None:
+            # Assume PostgreSQL como primário (usa %s), adapta se for SQLite
+            if conn_type == "sqlite" and "%s" in query:
+                adapted_query = query.replace("%s", "?")
+            # Não precisa adaptar de ? para %s se PG é o padrão
+
+            # print(f"DEBUG [Execute Query]: Executando: {adapted_query} com Params: {params}") # Log detalhado
+            cursor.execute(adapted_query, params)
+        else:
+            # print(f"DEBUG [Execute Query]: Executando: {adapted_query}") # Log detalhado
+            cursor.execute(adapted_query)
+
+        # Commit é feito pelo autocommit=True na conexão ou manualmente se necessário
+        # if is_dml and not conn.autocommit:
+        #    conn.commit()
+
+        if is_dml:
+            result = cursor.rowcount # Número de linhas afetadas
+        elif fetch_one:
+            result = cursor.fetchone() # Retorna uma tupla ou None
+        elif fetch_all:
+            result = cursor.fetchall() # Retorna lista de tuplas ou lista vazia []
+
+        # print(f"DEBUG [Execute Query]: Resultado: {result}") # Log detalhado
+
+    except (PgError, sqlite3.Error, Exception) as e:
+        error_type = type(e).__name__
+        print(f"ERRO [Execute Query] ({error_type}): {e}")
+        print(f"  Query: {query}")
+        print(f"  Params: {params}")
+        try:
+            if conn and not conn.autocommit: conn.rollback() # Tenta rollback se não houver autocommit
+        except: pass
+        result = None # Retorna None em caso de erro
+
+    finally:
+        if cursor:
+            try: cursor.close()
+            except: pass
+        # Fecha a conexão após cada query para evitar conexões ociosas longas no worker
+        close_connection_worker(conn_info)
+
+    return result
 
 
 # NOVA Função para buscar TODAS as configs
