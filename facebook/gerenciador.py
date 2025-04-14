@@ -2179,102 +2179,184 @@ def show_gerenciador_page():
 
 
         # ==========================
+        # ==========================
         # Aba 3: Configurações
         # ==========================
         with tabs[2]:
-            # ... (Cole aqui o código COMPLETO da aba de configurações da sua versão anterior) ...
-            # Nenhuma mudança relacionada ao timezone é necessária aqui.
-            # Exemplo:
-            if 'show_add_config_form' not in st.session_state: st.session_state.show_add_config_form = False
+            # --- Botão para mostrar/ocultar formulário de adicionar conta ---
+            if 'show_add_config_form' not in st.session_state:
+                st.session_state.show_add_config_form = False # Inicializa se não existir
+
             col_cfg_hdr1, col_cfg_hdr2 = st.columns([3, 1])
             with col_cfg_hdr2:
-                 # ... (botão Adicionar Conta/Recolher Formulário) ...
-                 button_label_cfg = "➖ Recolher Formulário" if st.session_state.show_add_config_form else "➕ Adicionar Conta"
-                 if st.button(button_label_cfg, key="toggle_config_form_button", use_container_width=True, type="secondary" if st.session_state.show_add_config_form else "primary"):
+                button_label_cfg = "➖ Recolher Formulário" if st.session_state.show_add_config_form else "➕ Adicionar Conta"
+                button_type_cfg = "secondary" if st.session_state.show_add_config_form else "primary"
+                if st.button(button_label_cfg, key="toggle_config_form_button", use_container_width=True, type=button_type_cfg):
                     st.session_state.show_add_config_form = not st.session_state.show_add_config_form
-                    st.rerun()
+                    st.rerun() # Recarrega para mostrar/ocultar o formulário
 
+            # --- Formulário para Adicionar Nova Conta (se show_add_config_form for True) ---
             if st.session_state.get('show_add_config_form', False):
-                with st.container(border=True):
-                     # ... (formulário para adicionar nova conta com st.date_input para vencimento) ...
-                     st.markdown("##### Adicionar Nova Conta")
-                     with st.form("add_api_config_form_tab3"):
-                          name_add = st.text_input("Nome da Conta*")
-                          acc_id_add = st.text_input("Account ID* (somente números)")
-                          app_id_add = st.text_input("App ID*")
-                          app_secret_add = st.text_input("App Secret*", type="password")
-                          access_token_add = st.text_area("Access Token*", height=100)
-                          token_expires_at_add = st.date_input("Data de Vencimento do Token", value=None)
-                          # ... (campos opcionais e botão salvar com st.rerun e limpeza de cache) ...
-                          submitted_add = st.form_submit_button("💾 Salvar Nova Conta")
-                          if submitted_add:
-                               if name_add and acc_id_add and app_id_add and app_secret_add and access_token_add:
-                                   # Assumindo que save_api_config existe
-                                   if save_api_config(name_add, app_id_add, app_secret_add, access_token_add, acc_id_add, token_expires_at=token_expires_at_add): # Passa a data
-                                       st.success(f"Conta '{name_add}' adicionada!")
-                                       st.session_state.show_add_config_form = False
-                                       # Limpa cache de configs
-                                       if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
-                                       if 'get_active_api_config' in globals(): get_active_api_config.clear()
-                                       time.sleep(1); st.rerun()
-                                   else: st.error("Erro ao salvar config.")
-                               else: st.warning("Preencha os campos obrigatórios *.")
-                     # ... (expander com instruções) ...
+                with st.container(border=True): # Adiciona uma borda ao redor do formulário
+                    st.markdown("##### Adicionar Nova Conta")
+                    with st.form("add_api_config_form_tab3"):
+                        # Campos do formulário
+                        name_add = st.text_input("Nome da Conta*", help="Um nome para identificar esta conta (ex: Cliente XPTO)")
+                        acc_id_add = st.text_input("Account ID* (somente números)", key="add_account_id_tab3", help="ID da sua conta de anúncios, sem 'act_' (ex: 1234567890)")
+                        app_id_add = st.text_input("App ID*", key="add_app_id_tab3", help="ID do seu Aplicativo no Facebook Developers")
+                        app_secret_add = st.text_input("App Secret*", type="password", key="add_app_secret_tab3", help="Chave secreta do seu App do Facebook")
+                        access_token_add = st.text_area("Access Token*", key="add_access_token_tab3", height=100, help="Token de acesso de LONGA DURAÇÃO com permissões ads_read e ads_management")
+                        token_expires_at_add = st.date_input(
+                            "Data de Vencimento do Token", value=None, min_value=date.today(),
+                            help="Selecione a data em que o token de acesso expira. Ajuda a lembrar de renovar.",
+                            key="add_token_expires_at_tab3"
+                        )
+                        with st.expander("Configurações Opcionais"):
+                            business_id_add = st.text_input("Business Manager ID", key="add_business_id_tab3", help="ID do Gerenciador de Negócios (se aplicável)")
+                            page_id_add = st.text_input("Página ID Principal", key="add_page_id_tab3", help="ID da Página do Facebook principal associada (se aplicável)")
 
+                        # Botão de salvar
+                        submitted_add = st.form_submit_button("💾 Salvar Nova Conta", type="primary", use_container_width=True)
+                        if submitted_add:
+                            # Validações e chamada para salvar (função save_api_config)
+                            if name_add and app_id_add and app_secret_add and access_token_add and acc_id_add:
+                                if not acc_id_add.isdigit():
+                                    st.error("Account ID deve conter apenas números.")
+                                else:
+                                    # Assumindo que save_api_config existe e retorna True/False
+                                    if save_api_config(
+                                        name_add, app_id_add, app_secret_add, access_token_add, acc_id_add,
+                                        business_id_add, page_id_add, token_expires_at=token_expires_at_add
+                                    ):
+                                        st.success(f"Conta '{name_add}' adicionada!")
+                                        st.session_state.show_add_config_form = False # Esconde formulário
+                                        # Limpa caches relevantes
+                                        if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
+                                        if 'get_active_api_config' in globals(): get_active_api_config.clear()
+                                        time.sleep(1)
+                                        st.rerun() # Recarrega a página
+                                    else:
+                                        st.error("Erro ao salvar a configuração no banco de dados.")
+                            else:
+                                st.warning("Preencha todos os campos marcados com *.")
+
+                    # Expander com instruções sobre como obter credenciais
+                    with st.expander("Como obter as credenciais do Facebook?"):
+                         st.markdown("""
+                         1.  **App ID e App Secret:** Crie um aplicativo em [Facebook for Developers](https://developers.facebook.com/apps/). Vá em Configurações > Básico.
+                         2.  **Account ID (ID da Conta de Anúncios):** No Gerenciador de Anúncios do Facebook, o ID da conta aparece na URL (ex: `act=123456789`) ou nas configurações da conta. Use apenas os números.
+                         3.  **Access Token (Token de Acesso):** Use a [Ferramenta do Explorer da API Graph](https://developers.facebook.com/tools/explorer/). Selecione seu App, peça um Token de Usuário com as permissões `ads_read` e `ads_management`. **Importante:** Converta este token para um token de longa duração (geralmente válido por 60 dias) usando a API ou a própria ferramenta. Cole o token de longa duração aqui.
+                         4.  **Data de Vencimento do Token:** Ao gerar o token de longa duração, a API geralmente informa a data de expiração. Anote-a aqui.
+                         5.  **Business Manager ID (Opcional):** Nas Configurações do Negócio do Facebook, o ID aparece na URL ou nas Informações da empresa.
+                         6.  **Página ID (Opcional):** Na página do Facebook, vá na seção "Sobre" e procure pelo ID da Página.
+                         """)
+
+            # --- Exibição das Contas Configuras ---
             st.markdown("##### Suas Contas")
-            all_configs_tab3 = get_all_api_configs() # Reutiliza a busca
+            # Busca todas as configs salvas (assumindo que get_all_api_configs existe)
+            all_configs_tab3 = get_all_api_configs()
             if all_configs_tab3:
-                 # ... (Loop para exibir cada configuração com botões Ativar/Excluir e info de vencimento) ...
-                 for config in all_configs_tab3:
-                      # ... (lógica para pegar config_id, is_active, nome, etc.) ...
-                      config_id = config.get('id')
-                      if not config_id: continue
-                      is_currently_active = config.get('is_active') == 1
-                      config_name = config.get('name', 'N/A')
-                      with st.container(border=True):
-                          col_details, col_actions_cfg = st.columns([4, 1])
-                          with col_details:
-                               # ... (exibe nome, IDs, status Ativa) ...
-                               active_badge = '<span class="success-badge">Ativa</span>' if is_currently_active else ''
-                               st.markdown(f"**{config_name}** {active_badge}", unsafe_allow_html=True)
-                               st.caption(f"Account ID: `{config.get('account_id', 'N/A')}` | App ID: `{config.get('app_id', 'N/A')}`")
-                               # ... (lógica para exibir data de vencimento do token) ...
-                               expires_date = config.get('token_expires_at')
-                               if isinstance(expires_date, date):
-                                    today = date.today()
-                                    days_left = (expires_date - today).days
-                                    formatted_date = expires_date.strftime('%d/%m/%Y')
-                                    if days_left < 0: st.caption(f"Token Expirado em: {formatted_date} ⚠️")
-                                    elif days_left < 7: st.caption(f"Token Vence em: {formatted_date} ({days_left} dias) ❗❗")
-                                    else: st.caption(f"Token Vence em: {formatted_date}")
-                               else: st.caption("Vencimento do Token: Não definido")
-                               # ... (expander para credenciais sensíveis) ...
-                          with col_actions_cfg:
-                               # ... (botões Ativar e Excluir com st.rerun e limpeza de cache) ...
-                               if not is_currently_active:
-                                    if st.button("✅ Ativar", key=f"activate_cfg_{config_id}", use_container_width=True):
-                                         # Assumindo set_active_api_config existe
-                                         if set_active_api_config(config_id):
-                                             st.toast(f"Conta '{config_name}' ativada!", icon="✅")
-                                             # Limpa caches relevantes
-                                             if 'get_active_api_config' in globals(): get_active_api_config.clear()
-                                             if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
-                                             if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
-                                             time.sleep(1); st.rerun()
-                                         else: st.error("Falha ao ativar.")
-                               if st.button("🗑️ Excluir", key=f"delete_config_{config_id}", type="secondary", use_container_width=True):
-                                    # Assumindo delete_api_config existe
-                                    if delete_api_config(config_id):
-                                         st.toast(f"Conta '{config_name}' excluída!", icon="🗑️")
-                                         # Limpa caches relevantes
-                                         if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
-                                         if 'get_active_api_config' in globals(): get_active_api_config.clear()
-                                         # Se a ativa foi excluída, limpar cache de campanhas
-                                         if is_currently_active and 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
-                                         time.sleep(1); st.rerun()
-                                    else: st.error("Falha ao excluir.")
+                # Loop para mostrar cada configuração salva
+                for config in all_configs_tab3:
+                    if not isinstance(config, dict): continue # Pula se não for dicionário
+                    config_id = config.get('id')
+                    if not config_id: continue # Pula se não tiver ID
 
+                    is_currently_active = config.get('is_active') == 1
+                    config_name = config.get('name', 'Conta sem nome') # Nome da conta
 
+                    # Container para agrupar visualmente cada conta
+                    with st.container(border=True):
+                        col_details, col_actions_cfg = st.columns([4, 1]) # Colunas para detalhes e botões
+
+                        # Coluna de Detalhes da Conta
+                        with col_details:
+                            # Nome da conta e badge "Ativa" se for o caso
+                            active_badge = '<span class="success-badge">Ativa</span>' if is_currently_active else ''
+                            st.markdown(f"**{config_name}** {active_badge}", unsafe_allow_html=True)
+
+                            # Account ID e App ID
+                            st.caption(f"Account ID: `{config.get('account_id', 'N/A')}` | App ID: `{config.get('app_id', 'N/A')}`")
+
+                            # Data de Vencimento do Token com alertas visuais
+                            expires_date = config.get('token_expires_at') # Já deve ser objeto date ou None
+                            if isinstance(expires_date, date):
+                                today = date.today()
+                                days_left = (expires_date - today).days
+                                formatted_date = expires_date.strftime('%d/%m/%Y')
+                                if days_left < 0:
+                                    st.caption(f"Token Expirado em: {formatted_date} ⚠️")
+                                elif days_left < 7:
+                                    st.caption(f"Token Vence em: {formatted_date} ({days_left} dias) ❗❗")
+                                elif days_left < 30:
+                                    st.caption(f"Token Vence em: {formatted_date} ({days_left} dias) ❗")
+                                else:
+                                    st.caption(f"Token Vence em: {formatted_date}")
+                            else:
+                                st.caption("Data de Vencimento do Token: Não definida")
+
+                            # ====> AQUI ESTÁ O EXPANDER COM AS CREDENCIAIS <====
+                            with st.expander("Ver/Ocultar Credenciais Sensíveis"):
+                                # Campo para mostrar o App Secret (como senha)
+                                st.text_input(
+                                    "App Secret:",
+                                    value=config.get('app_secret', 'N/A'), # Busca o valor da config
+                                    type="password", # Esconde os caracteres
+                                    key=f"secret_display_{config_id}", # Chave única para o widget
+                                    disabled=True # Campo apenas para visualização
+                                )
+                                # Campo para mostrar o Access Token
+                                st.text_area(
+                                    "Access Token:",
+                                    value=config.get('access_token', 'N/A'), # Busca o valor da config
+                                    key=f"token_display_{config_id}", # Chave única para o widget
+                                    disabled=True, # Campo apenas para visualização
+                                    height=100 # Altura do campo de texto
+                                )
+                                st.caption("⚠️ Estas são informações sensíveis. Não compartilhe.")
+                            # ====> FIM DO EXPANDER <====
+
+                            # Mostra IDs opcionais se existirem
+                            if config.get('business_id'):
+                                st.caption(f"Business ID: `{config['business_id']}`")
+                            if config.get('page_id'):
+                                st.caption(f"Page ID: `{config['page_id']}`")
+
+                        # Coluna de Ações (Botões)
+                        with col_actions_cfg:
+                            # Botão "Ativar" (só aparece se a conta não estiver ativa)
+                            if not is_currently_active:
+                                if st.button("✅ Ativar", key=f"activate_cfg_{config_id}", use_container_width=True, help=f"Tornar '{config_name}' a conta ativa"):
+                                    # Assumindo que set_active_api_config existe
+                                    if set_active_api_config(config_id):
+                                        st.toast(f"Conta '{config_name}' ativada!", icon="✅")
+                                        # Limpa caches relevantes
+                                        if 'get_active_api_config' in globals(): get_active_api_config.clear()
+                                        if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
+                                        if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                        time.sleep(1)
+                                        st.rerun() # Recarrega a página
+                                    else:
+                                        st.error("Falha ao ativar a conta.")
+                            else:
+                                # Adiciona um espaço vazio para alinhar com o botão excluir quando a conta está ativa
+                                st.write("")
+
+                            # Botão "Excluir"
+                            if st.button("🗑️ Excluir", key=f"delete_config_{config_id}", type="secondary", use_container_width=True, help=f"Excluir permanentemente a configuração '{config_name}'"):
+                                 # Assumindo que delete_api_config existe
+                                 if delete_api_config(config_id):
+                                     st.toast(f"Conta '{config_name}' excluída!", icon="🗑️")
+                                     # Limpa caches relevantes
+                                     if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
+                                     if 'get_active_api_config' in globals(): get_active_api_config.clear()
+                                     if is_currently_active and 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                     time.sleep(1)
+                                     st.rerun() # Recarrega a página
+                                 else:
+                                     st.error("Falha ao excluir a conta.")
+
+            # Mensagem se nenhuma conta estiver configurada E o formulário não estiver visível
             elif not st.session_state.get('show_add_config_form', False):
                 st.info("Nenhuma conta configurada. Clique em '➕ Adicionar Conta' para começar.")
 
