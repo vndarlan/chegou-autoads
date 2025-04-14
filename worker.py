@@ -677,10 +677,11 @@ def run_automatic_rules():
     start_time = time.time()
     print(f"\n--- [WORKER START - Multi-Conta] {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')} ---")
 
-    processed_rules_count = 0
     total_actions_executed = 0
-    accounts_processed = 0
-    accounts_failed_init = 0
+    accounts_processed_count = 0
+    accounts_failed_init_count = 0
+    rules_checked_count = 0
+    rules_executed_count = 0
 
     # 1. Buscar TODAS as configurações de API
     all_configs = get_all_api_configs_worker()
@@ -688,17 +689,16 @@ def run_automatic_rules():
         print("AVISO [Worker]: Nenhuma configuração de API encontrada para processar. Saindo.")
         return
 
-    # 2. Buscar TODAS as regras automáticas ativas (pode ser feito uma vez)
+    # 2. Buscar TODAS as regras automáticas ativas
     print("INFO [Worker]: Buscando regras automáticas ativas...")
     rule_query = """
-        SELECT id, name, execution_interval_hours, last_automatic_run_at, -- ... (restante das colunas da regra)
+        SELECT id, name, execution_interval_hours, last_automatic_run_at,
                is_composite, primary_metric, primary_operator, primary_value,
                secondary_metric, secondary_operator, secondary_value, join_operator,
                action_type, action_value
         FROM rules
         WHERE execution_mode = 'automatic' AND is_active = 1 ORDER BY id
     """
-    # >>>>> GARANTA QUE execute_query está colada e adaptada acima <<<<<
     rules_data = execute_query(rule_query, fetch_all=True)
     if rules_data is None:
         print("ERRO [Worker]: Falha ao buscar regras do banco de dados. Saindo.")
@@ -708,136 +708,157 @@ def run_automatic_rules():
         return
 
     print(f"INFO [Worker]: {len(rules_data)} regras automáticas ativas encontradas.")
-    rule_keys = ["id", "name", "execution_interval_hours", "last_automatic_run_at", "is_composite", "primary_metric", "primary_operator", "primary_value", "secondary_metric", "secondary_operator", "secondary_value", "join_operator", "action_type", "action_value"]
-    # Converte tuplas de regras para dicionários para facilitar
+    # Mapeia nomes das colunas para facilitar acesso (IMPORTANTE: a ordem deve bater com o SELECT)
+    rule_keys = ["id", "name", "execution_interval_hours", "last_automatic_run_at", "is_composite",
+                 "primary_metric", "primary_operator", "primary_value", "secondary_metric",
+                 "secondary_operator", "secondary_value", "join_operator", "action_type", "action_value"]
     all_rules = [dict(zip(rule_keys, rule_tuple)) for rule_tuple in rules_data]
 
     now_utc = datetime.now(timezone.utc)
+    rules_due_to_run = [] # Lista para guardar regras que precisam rodar AGORA
+    rules_to_update_timestamp = set() # Conjunto para guardar IDs das regras cujo timestamp deve ser atualizado no final
 
-    # 3. Loop principal: Iterar sobre CADA configuração de API
-    for config in all_configs:
-        config_id = config.get('id')
-        account_id_str = config.get('account_id')
-        config_name = config.get('name', f'Config ID {config_id}')
-        print(f"\n===== Processando Conta: {config_name} (act_{account_id_str}) =====")
-        accounts_processed += 1
-        actions_this_account = 0
+    # 3. PRIMEIRO LOOP: Verificar quais regras estão "due"
+    print("INFO [Worker]: Verificando quais regras estão no horário de execução...")
+    for rule in all_rules:
+        rules_checked_count += 1
+        rule_id = rule['id']
+        interval_h = rule.get('execution_interval_hours')
+        last_run_ts = rule.get('last_automatic_run_at')
 
-        # 3.1. Inicializar API PARA ESTA CONTA
-        # >>>>> GARANTA QUE init_facebook_api_worker está colada e adaptada acima <<<<<
-        current_account_id = init_facebook_api_worker(config)
-        if not current_account_id:
-            print(f"AVISO [Worker]: Falha ao inicializar API para {config_name}. Pulando esta conta.")
-            accounts_failed_init += 1
-            continue # Pula para a próxima configuração/conta
-
-        # 3.2. Buscar campanhas DESTA CONTA
-        # >>>>> GARANTA QUE get_facebook_campaigns está colada e adaptada acima <<<<<
-        campaigns_this_account = get_facebook_campaigns(current_account_id)
-        if campaigns_this_account is None:
-            print(f"ERRO [Worker]: Falha ao buscar campanhas para {config_name}. Pulando regras para esta conta.")
+        if not interval_h or interval_h <= 0:
+            # print(f"DEBUG [Worker]: Regra ID {rule_id} ('{rule.get('name')}') com intervalo inválido ({interval_h}h). Pulando.")
             continue
-        campaigns_to_check = [c for c in campaigns_this_account if isinstance(c, dict) and c.get('effective_status') not in ['ARCHIVED', 'DELETED']]
-        print(f"INFO [Worker]: {len(campaigns_to_check)} campanhas elegíveis encontradas para {config_name}.")
-        if not campaigns_to_check:
-             print(f"INFO [Worker]: Nenhuma campanha elegível em {config_name} para aplicar regras.")
-             # Continua para verificar timestamps das regras mesmo sem campanhas
 
-        # 3.3. Iterar sobre as REGRAS (que já foram buscadas antes)
-        for rule in all_rules:
-            rule_id = rule['id']
-            rule_name = rule['name']
-            interval_h = rule.get('execution_interval_hours')
-            last_run_ts = rule.get('last_automatic_run_at')
+        is_due = False
+        if last_run_ts is None:
+            is_due = True
+            print(f"  -> Regra ID {rule_id} ('{rule.get('name')}'): Primeira execução automática.")
+        else:
+            # Garante que last_run_ts tenha timezone (assume UTC se não tiver)
+            if isinstance(last_run_ts, datetime) and last_run_ts.tzinfo is None:
+                last_run_ts = last_run_ts.replace(tzinfo=timezone.utc)
+            elif not isinstance(last_run_ts, datetime):
+                 print(f"  AVISO: 'last_automatic_run_at' para regra ID {rule_id} não é um datetime válido ({type(last_run_ts)}). Considerando como primeira execução.")
+                 is_due = True # Trata como due se o timestamp for inválido
 
-            # A verificação do tempo/due é GLOBAL para a regra, não por conta
-            print(f"---> Verificando Regra ID {rule_id} ('{rule_name}') para Conta {config_name}")
-            processed_rules_count += 1 # Conta cada verificação de regra por conta
+            if not is_due and isinstance(last_run_ts, datetime): # Só calcula next_due se não for a primeira/inválida
+                try:
+                    next_due_time = last_run_ts + timedelta(hours=interval_h)
+                    # print(f"  DEBUG: Regra ID {rule_id} - Última: {last_run_ts.strftime('%Y-%m-%d %H:%M %Z')}, Próxima >= {next_due_time.strftime('%Y-%m-%d %H:%M %Z')}")
+                    if now_utc >= next_due_time:
+                        is_due = True
+                        print(f"  -> Regra ID {rule_id} ('{rule.get('name')}'): Pronta para executar.")
+                    # else: print(f"  -> Regra ID {rule_id}: Ainda não está na hora.")
+                except Exception as e_delta:
+                     print(f"  ERRO: Calculando next_due_time para regra ID {rule_id}: {e_delta}. Pulando regra.")
+                     continue # Pula esta regra se houver erro no cálculo
 
-            if not interval_h or interval_h <= 0:
-                #print(f"  AVISO: Intervalo inválido ({interval_h}h). Pulando regra.") # Log repetitivo
+        if is_due:
+            rules_due_to_run.append(rule) # Adiciona a regra completa à lista das que devem rodar
+            rules_to_update_timestamp.add(rule_id) # Marca para atualizar o timestamp DEPOIS
+
+    if not rules_due_to_run:
+        print("INFO [Worker]: Nenhuma regra automática no horário para executar neste ciclo.")
+    else:
+        print(f"INFO [Worker]: {len(rules_due_to_run)} regras prontas para serem aplicadas nas contas.")
+
+        # 4. SEGUNDO LOOP: Iterar sobre as CONTAS
+        for config in all_configs:
+            config_id = config.get('id')
+            account_id_str = config.get('account_id')
+            config_name = config.get('name', f'Config ID {config_id}')
+            print(f"\n===== Processando Conta: {config_name} (act_{account_id_str}) para regras prontas =====")
+            accounts_processed_count += 1
+            actions_this_account = 0
+
+            # 4.1. Inicializar API para esta conta
+            current_account_id = init_facebook_api_worker(config)
+            if not current_account_id:
+                print(f"AVISO [Worker]: Falha ao inicializar API para {config_name}. Pulando regras para esta conta.")
+                accounts_failed_init_count += 1
+                continue # Pula para a próxima conta
+
+            # 4.2. Buscar campanhas desta conta
+            campaigns_this_account = get_facebook_campaigns(current_account_id)
+            if campaigns_this_account is None:
+                print(f"ERRO [Worker]: Falha ao buscar campanhas para {config_name}. Pulando regras para esta conta.")
                 continue
+            campaigns_to_check = [c for c in campaigns_this_account if isinstance(c, dict) and c.get('effective_status') not in ['ARCHIVED', 'DELETED']]
+            print(f"INFO [Worker]: {len(campaigns_to_check)} campanhas elegíveis encontradas para {config_name}.")
 
-            is_due = False
-            if last_run_ts is None:
-                is_due = True
-                #print(f"  INFO: Primeira execução automática.")
+            if not campaigns_to_check:
+                 print(f"INFO [Worker]: Nenhuma campanha elegível em {config_name} para aplicar regras.")
             else:
-                if last_run_ts.tzinfo is None: last_run_ts = last_run_ts.replace(tzinfo=timezone.utc)
-                next_due_time = last_run_ts + timedelta(hours=interval_h)
-                #print(f"  INFO: Última: {last_run_ts.strftime('%Y-%m-%d %H:%M %Z')}, Próxima >= {next_due_time.strftime('%Y-%m-%d %H:%M %Z')}")
-                if now_utc >= next_due_time:
-                    is_due = True
-                    #print(f"  INFO: Regra pronta.")
-                #else: print(f"  INFO: Ainda não é hora.")
+                # 4.3. Iterar sobre as REGRAS QUE ESTÃO "DUE"
+                for rule in rules_due_to_run: # Usa a lista filtrada
+                    rule_id = rule['id']
+                    rule_name = rule['name']
+                    print(f"  ---> Aplicando Regra ID {rule_id} ('{rule_name}') na Conta {config_name}")
+                    rule['is_active'] = 1 # Garante que está ativa para simulação
 
-            if is_due:
-                print(f"  EXECUTANDO Regra ID {rule_id} ('{rule_name}') para Conta {config_name}")
-                cycle_processed_successfully = False
-
-                if not campaigns_to_check:
-                    #print(f"  INFO: Nenhuma campanha elegível nesta conta para testar.")
-                    cycle_processed_successfully = True
-                else:
-                    rule['is_active'] = 1 # Para simulate_rule_application
-                    # >>>>> GARANTA QUE simulate_rule_application está colada acima <<<<<
+                    # 4.4. Iterar sobre as CAMPANHAS desta conta
                     for campaign in campaigns_to_check:
                         campaign_id = campaign.get('id')
                         campaign_name = campaign.get('name', f"ID {campaign_id}")
+                        # print(f"    -> Verificando Campanha ID {campaign_id} ('{campaign_name[:30]}...')") # Log muito verboso
                         try:
+                            # Simula APENAS a regra atual na campanha atual
                             sim_results = simulate_rule_application(campaign, [rule])
+                            # Verifica se a simulação retornou um resultado para ESTA regra
                             if sim_results and any(s.get('rule_id') == rule_id for s in sim_results):
-                                print(f"    -> Aplicando em Campanha ID {campaign_id} ('{campaign_name[:30]}...')")
-                                # >>>>> GARANTA QUE execute_rule está colada e adaptada acima <<<<<
+                                print(f"      ✅ Condição ATENDIDA para Campanha ID {campaign_id} ('{campaign_name[:30]}...'). EXECUTANDO AÇÃO...")
+                                rules_executed_count +=1 # Conta quantas vezes uma regra é ATIVADA
                                 success_exec, msg_exec = execute_rule(campaign_id, rule_id)
                                 if success_exec:
                                      actions_this_account += 1
-                                # execute_rule faz o log interno
-                            cycle_processed_successfully = True # Processou o ciclo da regra
+                                     print(f"      ✅ Ação executada: {msg_exec}")
+                                else:
+                                     print(f"      ❌ Falha na execução: {msg_exec}")
+                                # execute_rule já faz o log no banco
+                            # else: print(f"    -> Condição NÃO atendida para Campanha ID {campaign_id}.") # Log muito verboso
+
                         except Exception as sim_exec_err:
-                             print(f"    -> ERRO CRÍTICO sim/exec Campanha ID {campaign_id}: {sim_exec_err}")
-                             # >>>>> GARANTA QUE log_rule_execution está colada e adaptada <<<<<
+                             print(f"    -> ERRO CRÍTICO sim/exec Regra ID {rule_id} na Campanha ID {campaign_id}: {sim_exec_err}")
                              log_rule_execution(rule_id, campaign_id, 'campaign', campaign_name, False, f"Worker sim/exec error: {str(sim_exec_err)[:150]}")
-                             cycle_processed_successfully = True
 
-                # 3.4. ATUALIZAR TIMESTAMP DA REGRA (APENAS UMA VEZ POR CICLO DO WORKER)
-                # Verifica se o ciclo foi processado E se o timestamp AINDA não foi atualizado NESTE CICLO do worker
-                # Usamos um set para rastrear regras já atualizadas neste ciclo
-                if 'updated_rules_this_run' not in locals(): updated_rules_this_run = set()
+            print(f"===== Conta {config_name} processada. Ações executadas nesta conta: {actions_this_account} =====")
+            total_actions_executed += actions_this_account
 
-                if is_due and cycle_processed_successfully and rule_id not in updated_rules_this_run:
-                    print(f"  INFO: Atualizando 'last_automatic_run_at' global para regra ID {rule_id}...")
-                    # >>>>> GARANTA QUE execute_query está colada e adaptada <<<<<
-                    update_result = execute_query(
-                        "UPDATE rules SET last_automatic_run_at = %s, updated_at = %s WHERE id = %s",
-                        (now_utc, now_utc, rule_id), is_dml=True
-                    )
-                    if update_result is None or update_result == 0:
-                         print(f"  ERRO: Falha ao atualizar timestamp global para regra ID {rule_id}.")
-                    else:
-                         updated_rules_this_run.add(rule_id) # Marca como atualizada neste ciclo
+    # 5. TERCEIRO PASSO: Atualizar Timestamps DAS REGRAS QUE RODARAM (estavam "due")
+    if rules_to_update_timestamp:
+        print(f"\nINFO [Worker]: Atualizando 'last_automatic_run_at' para {len(rules_to_update_timestamp)} regras...")
+        updated_count = 0
+        for rule_id_to_update in rules_to_update_timestamp:
+            # Usamos now_utc que foi pego no início do script para consistência
+            update_result = execute_query(
+                "UPDATE rules SET last_automatic_run_at = %s, updated_at = %s WHERE id = %s",
+                (now_utc, now_utc, rule_id_to_update), is_dml=True
+            )
+            if update_result is not None and update_result > 0:
+                # print(f"  -> Timestamp atualizado para regra ID {rule_id_to_update}.")
+                updated_count += 1
+            else:
+                 print(f"  ERRO: Falha ao atualizar timestamp para regra ID {rule_id_to_update}.")
+        print(f"INFO [Worker]: {updated_count} timestamps atualizados com sucesso.")
+    else:
+         print("INFO [Worker]: Nenhum timestamp de regra para atualizar.")
 
-        print(f"===== Conta {config_name} processada. Ações executadas nesta conta: {actions_this_account} =====")
-        total_actions_executed += actions_this_account
 
-    # Fim do loop de contas
-
-    # 4. Log Final
+    # 6. Log Final
     end_time = time.time()
     duration = end_time - start_time
     print(f"\n--- [WORKER END - Multi-Conta] {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')} ---")
     print(f"Tempo total: {duration:.2f} seg.")
-    print(f"Contas Processadas: {accounts_processed} (Falha na inicialização: {accounts_failed_init})")
-    print(f"Verificações de Regra Totais: {processed_rules_count}")
-    print(f"Total de Ações de Regra Executadas (todas as contas): {total_actions_executed}")
-
-    # 5. Fecha conexão principal (a conexão é obtida/fechada dentro do loop por execute_query agora)
-    # Não precisamos mais fechar a `main_conn` aqui, pois get_db_connection_worker é chamado
-    # dentro de execute_query (idealmente deveria ter um gerenciamento melhor, mas funciona)
+    print(f"Contas Verificadas: {accounts_processed_count} (Falha na inicialização: {accounts_failed_init_count})")
+    print(f"Total de Regras Automáticas Ativas Verificadas: {rules_checked_count}")
+    print(f"Total de Ativações de Regra (condição atendida): {rules_executed_count}")
+    print(f"Total de Ações de API Executadas (todas as contas): {total_actions_executed}")
 
 
 # --- Ponto de Entrada do Script ---
 if __name__ == "__main__":
+    # ... (verificação de variáveis de ambiente permanece a mesma) ...
     required_env_vars = ["PGHOST", "PGUSER", "PGPASSWORD", "PGPORT", "PGDATABASE"]
     missing_vars = [var for var in required_env_vars if not os.getenv(var)]
     if missing_vars:
@@ -845,5 +866,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"INFO [Worker]: Iniciando execução do script {os.path.basename(__file__)}")
-    run_automatic_rules()
+    run_automatic_rules() # Chama a função reestruturada
     print(f"INFO [Worker]: Script {os.path.basename(__file__)} concluído.")
