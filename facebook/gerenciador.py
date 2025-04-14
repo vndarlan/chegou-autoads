@@ -2333,4 +2333,4 @@ def show_gerenciador_page():
 
 # --- Ponto de Entrada da Página ---
 # Chamado por iniciar.py
-#show_gerenciador_page()
+show_gerenciador_page()
