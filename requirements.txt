@@ -5,3 +5,4 @@ facebook-business
 psycopg2-binary # Driver PostgreSQL
 folium
 streamlit-folium
+pytz
