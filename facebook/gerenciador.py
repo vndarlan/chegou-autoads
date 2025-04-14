@@ -568,7 +568,7 @@ def init_facebook_api():
                 app_id=config["app_id"],
                 app_secret=config["app_secret"],
                 access_token=config["access_token"],
-                api_version='v20.0'
+                api_version='v22.0'
             )
             # Verifica a conexão
             try:
