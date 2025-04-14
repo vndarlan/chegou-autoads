@@ -673,63 +673,80 @@ def get_campaign_insights_cached(account_id, campaign_ids_tuple, time_range='las
         return []
 
 @st.cache_data(ttl=300) # Cache por 5 minutos
-def get_facebook_campaigns_cached(account_id_from_main):
-    """Busca todas as campanhas e seus insights recentes (cacheado)."""
+def get_facebook_campaigns_cached(account_id_from_main): # O argumento ainda é recebido, mas não será usado para a verificação
+    """
+    Busca todas as campanhas e seus insights recentes (cacheado).
+    (Versão Modificada: Remove a verificação de inconsistência de ID)
+    """
+    print(f"DEBUG [get_facebook_campaigns_cached]: Iniciando busca. Esperado (parâmetro): {account_id_from_main}")
     campaigns_result = []
     try:
+        # Chama init_facebook_api() que usa get_active_api_config() internamente
+        # para garantir que a API está configurada para a conta ATIVA no momento.
         initialized_account_id = init_facebook_api()
         if not initialized_account_id:
-            return None
+            st.error("Falha ao inicializar a API do Facebook dentro de get_facebook_campaigns_cached.")
+            return None # Retorna None se a API não inicializar
 
-        if account_id_from_main != initialized_account_id:
-             st.warning(f"Inconsistência de Account ID: Esperado {account_id_from_main}, API inicializada com {initialized_account_id}. Usando {initialized_account_id}.")
-             target_account_id = initialized_account_id
-        else:
-             target_account_id = initialized_account_id
+        print(f"DEBUG [get_facebook_campaigns_cached]: API inicializada com sucesso para conta: {initialized_account_id}")
 
+        # <<< REMOÇÃO DA VERIFICAÇÃO >>>
+        # O if/else abaixo foi removido. Vamos confiar no ID retornado por init_facebook_api.
+        # if account_id_from_main != initialized_account_id:
+        #      st.warning(f"Inconsistência de Account ID: Esperado {account_id_from_main}, API inicializada com {initialized_account_id}. Usando {initialized_account_id}.")
+        #      target_account_id = initialized_account_id
+        # else:
+        #      target_account_id = initialized_account_id
+        # <<< FIM DA REMOÇÃO >>>
+
+        # Usa diretamente o ID retornado pela inicialização da API
+        target_account_id = initialized_account_id
+        print(f"DEBUG [get_facebook_campaigns_cached]: Usando Account ID: {target_account_id} para buscar campanhas.")
+
+        # Cria o objeto AdAccount com o ID correto
         account = AdAccount(f'act_{target_account_id}')
         fields_to_fetch = [
             'id', 'name', 'status', 'objective', 'created_time',
             'start_time', 'stop_time', 'daily_budget', 'lifetime_budget',
             'effective_status', 'buying_type', 'budget_remaining'
         ]
+        # Busca as campanhas
         campaigns_raw = list(account.get_campaigns(fields=fields_to_fetch, params={'limit': 500}))
 
         if not campaigns_raw:
-             return []
+             print(f"INFO [get_facebook_campaigns_cached]: Nenhuma campanha encontrada para conta {target_account_id}.")
+             return [] # Retorna lista vazia se não houver campanhas
 
+        # Pega os IDs das campanhas encontradas
         campaign_ids = [campaign.get("id") for campaign in campaigns_raw if campaign.get("id")]
-        if not campaign_ids: return []
+        if not campaign_ids:
+            print(f"INFO [get_facebook_campaigns_cached]: Campanhas encontradas não possuem IDs válidos para conta {target_account_id}.")
+            return []
 
+        print(f"DEBUG [get_facebook_campaigns_cached]: {len(campaign_ids)} campanhas encontradas. Buscando insights...")
+        # Chama a função de insights (passando o ID correto e convertendo a lista de IDs para tupla para o cache)
         insights_data = get_campaign_insights_cached(target_account_id, tuple(campaign_ids), "last_7d")
-        if insights_data is None: insights_data = []
+        if insights_data is None: insights_data = [] # Garante que seja uma lista
 
+        # Mapeia insights por ID de campanha para facilitar a busca
         insights_map = {insight.get("campaign_id"): insight for insight in insights_data if insight.get("campaign_id")}
+        print(f"DEBUG [get_facebook_campaigns_cached]: {len(insights_map)} insights mapeados.")
 
+        # Combina dados da campanha com insights
         for campaign in campaigns_raw:
             campaign_dict = campaign.export_all_data()
             campaign_id = campaign_dict.get("id")
             if not campaign_id: continue
 
             campaign_insights = insights_map.get(campaign_id)
-            if campaign_insights:
-                campaign_dict["insights"] = {
-                    "cpa": float(campaign_insights.get("cpa", 0.0)),
-                    "purchases": int(campaign_insights.get("purchases", 0)),
-                    "roas": float(campaign_insights.get("roas", 0.0)),
-                    "purchase_value": float(campaign_insights.get("purchase_value", 0.0)),
-                    "spend": float(campaign_insights.get("spend", 0.0)),
-                    "clicks": int(campaign_insights.get("clicks", 0)),
-                    "impressions": int(campaign_insights.get("impressions", 0)),
-                    "ctr": float(campaign_insights.get("ctr", 0.0)),
-                    "cpc": float(campaign_insights.get("cpc", 0.0)),
-                }
-            else:
-                campaign_dict["insights"] = {
-                    "cpa": 0.0, "purchases": 0, "roas": 0.0, "purchase_value": 0.0,
-                    "spend": 0.0, "clicks": 0, "impressions": 0, "ctr": 0.0, "cpc": 0.0
-                }
+            # Define um dicionário de insights padrão caso não encontre para a campanha
+            insights_default = {
+                "cpa": 0.0, "purchases": 0, "roas": 0.0, "purchase_value": 0.0,
+                "spend": 0.0, "clicks": 0, "impressions": 0, "ctr": 0.0, "cpc": 0.0
+            }
+            campaign_dict["insights"] = {**insights_default, **(campaign_insights or {})} # Usa o default se campaign_insights for None
 
+            # Converte orçamento para inteiro (centavos)
             daily_budget_str = campaign_dict.get('daily_budget')
             lifetime_budget_str = campaign_dict.get('lifetime_budget')
             campaign_dict['daily_budget'] = int(daily_budget_str) if daily_budget_str and daily_budget_str.isdigit() else 0
@@ -737,14 +754,18 @@ def get_facebook_campaigns_cached(account_id_from_main):
 
             campaigns_result.append(campaign_dict)
 
+        print(f"DEBUG [get_facebook_campaigns_cached]: Retornando {len(campaigns_result)} campanhas processadas.")
         return campaigns_result
 
-    except PgError as db_err: # Captura erro do PostgreSQL também
+    except (PgError, sqlite3.Error) as db_err: # Captura erro do DB também
          st.error(f"Erro de banco de dados em get_facebook_campaigns: {db_err}")
+         print(f"ERRO DB [get_facebook_campaigns_cached]: {traceback.format_exc()}")
          return None
     except Exception as e:
-        st.error(f"Erro CRÍTICO inesperado em get_facebook_campaigns: {e}")
-        return None
+        # Captura outros erros (ex: API do Facebook)
+        st.error(f"Erro CRÍTICO inesperado ao buscar campanhas: {e}")
+        print(f"ERRO API/Outro [get_facebook_campaigns_cached]: {traceback.format_exc()}")
+        return None # Retorna None para indicar erro grave
 
 
 # --- Funções de Regras (Adaptadas para PostgreSQL) ---
