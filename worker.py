@@ -195,23 +195,28 @@ def init_facebook_api_worker(config):
     # else: print(f"AVISO [Worker Init FB]: Data de expiração do token não definida para config ID {config.get('id')}.")
 
     try:
-        # Limpa qualquer API anterior antes de inicializar a nova
-        FacebookAdsApi.init(clear_instance=True)
-        # Inicializa com a config atual
+        # REMOVA a linha com clear_instance=True - NÃO É NECESSÁRIA/SUPORTADA
+        # FacebookAdsApi.init(clear_instance=True) # <<< LINHA REMOVIDA
+
+        # Inicializa diretamente com a config atual.
+        # Esta chamada sobrescreverá a instância singleton anterior.
         FacebookAdsApi.init(
             app_id=config["app_id"],
             app_secret=config["app_secret"],
             access_token=config["access_token"],
-            api_version='v20.0'
+            api_version='v20.0' # É uma boa prática especificar a versão
         )
         # Verifica a conexão para esta conta específica
         account_str_id = f'act_{config["account_id"]}'
+        # Tenta fazer uma chamada leve para confirmar que as credenciais funcionam
         AdAccount(account_str_id).api_get(fields=['id'])
         print(f"INFO [Worker Init FB]: Conexão com conta {account_str_id} OK.")
         return config["account_id"] # Retorna o ID da conta se sucesso
     except Exception as e:
+        # Log do erro real encontrado
         print(f"ERRO [Worker Init FB]: Falha ao inicializar/verificar API para conta {config.get('account_id')}: {e}")
-        # print(f"Traceback: {traceback.format_exc()}") # Descomente para detalhes
+        # Descomente a linha abaixo se precisar de mais detalhes para outros erros
+        # print(f"Traceback: {traceback.format_exc()}")
         return None # Retorna None em caso de erro
 
 def get_campaign_insights(account_id, campaign_ids_list, time_range='last_7d'):
