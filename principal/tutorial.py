@@ -13,35 +13,34 @@ with content_area:
     st.divider()
 
     # --- Módulo 1 ---
-    st.subheader("Módulo 1: Introdução e Configuração Inicial")
-    st.write("Comece por aqui! Aprenda os conceitos básicos e como ativar a principal automação.") # Descrição opcional do módulo
+    st.subheader("Gerenciador de Anúncios: Introdução e Configuração Inicial")
+    st.write("Comece por aqui!") # Descrição opcional do módulo
 
     # Vídeo 1 do Módulo 1
     with st.container(border=True): # 'border=True' adiciona uma borda sutil para agrupar visualmente
-        st.markdown("##### **Vídeo 1:** Visão Geral da Plataforma") # Título do vídeo com ênfase na sequência
-        st.write("Explore a interface principal e entenda as funcionalidades chave disponíveis.") # Descrição do vídeo
-        st.video("https://www.youtube.com/watch?v=_AgxTh3ddyM") # URL Placeholder
+        st.markdown("##### **Vídeo 1:** Como conectar sua conta do Facebook") # Título do vídeo com ênfase na sequência
+        st.video("https://youtu.be/pSJM8rNgIg0") # URL Placeholder
+        st.write("Criar aplicativo: https://developers.facebook.com/async/registration/dialog/?src=default") # Descrição do vídeo
+        st.write("Permições para o token: read_insights, ads_management, ads_read, business_management") # Descrição do vídeo
 
     # Espaçador visual entre os vídeos do mesmo módulo (opcional)
     st.write("") # Adiciona um pequeno espaço vertical
 
     # Vídeo 2 do Módulo 1
     with st.container(border=True):
-        st.markdown("##### **Vídeo 2:** Ativando a Automação Novelties") # Título do vídeo com ênfase na sequência
-        st.write("Siga o passo a passo detalhado para configurar e colocar a automação 'Novelties' para rodar.")
-        st.video("https://www.youtube.com/watch?v=_AgxTh3ddyM") # URL Placeholder
+        st.markdown("##### **Vídeo 2:** EM BREVE") # Título do vídeo com ênfase na sequência
+        st.video("https://www.youtube.com/watch") # URL Placeholder
 
     st.divider() # Separador entre Módulo 1 e Módulo 2
 
     # --- Módulo 2 ---
-    st.subheader("Módulo 2: Analisando Resultados")
-    st.write("Após ativar, aprenda como acompanhar e interpretar os resultados.")
+    st.subheader("Módulo 2: EM BREVE")
 
     # Vídeo 1 do Módulo 2
     with st.container(border=True):
-        st.markdown("##### **Vídeo 1:** Entendendo o Dashboard Principal")
-        st.write("Descubra como ler os gráficos e métricas apresentados no seu dashboard.")
-        st.video("https://www.youtube.com/watch?v=_AgxTh3ddyM") # URL Placeholder
+        st.markdown("##### **Vídeo 1:** EM BREVE")
+        st.write("EM BREVE")
+        st.video("https://www.youtube.com/watch") # URL Placeholder
 
     st.divider() # Adicione um divisor final ou para separar do próximo módulo
 
