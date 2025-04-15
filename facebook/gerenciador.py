@@ -167,18 +167,33 @@ def init_db():
     try:
         cursor = conn.cursor()
 
-        # --- Tabela api_config (sem alterações aqui, mantenha como está no seu código original) ---
+        # --- Tabela api_config com novos campos ---
         if conn_type == "sqlite":
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS api_config (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, app_id TEXT NOT NULL,
                     app_secret TEXT NOT NULL, access_token TEXT NOT NULL, account_id TEXT NOT NULL,
                     business_id TEXT, page_id TEXT, is_active INTEGER DEFAULT 0,
+                    country TEXT, account_manager TEXT, 
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP, token_expires_at DATE
                 )
             ''')
             cursor.execute("PRAGMA table_info(api_config)")
             columns_api = [info[1] for info in cursor.fetchall()]
+            
+            # Verificar e adicionar coluna de país
+            if 'country' not in columns_api:
+                print("Adicionando coluna 'country' em api_config (SQLite)...")
+                cursor.execute('ALTER TABLE api_config ADD COLUMN country TEXT')
+                conn.commit()
+                
+            # Verificar e adicionar coluna de responsável
+            if 'account_manager' not in columns_api:
+                print("Adicionando coluna 'account_manager' em api_config (SQLite)...")
+                cursor.execute('ALTER TABLE api_config ADD COLUMN account_manager TEXT')
+                conn.commit()
+                
+            # Verificar coluna de data de expiração (já existente no código)
             if 'token_expires_at' not in columns_api:
                 print("Adicionando coluna 'token_expires_at' em api_config (SQLite)...")
                 cursor.execute('ALTER TABLE api_config ADD COLUMN token_expires_at DATE')
@@ -189,9 +204,44 @@ def init_db():
                     id SERIAL PRIMARY KEY, name TEXT NOT NULL, app_id TEXT NOT NULL,
                     app_secret TEXT NOT NULL, access_token TEXT NOT NULL, account_id TEXT NOT NULL,
                     business_id TEXT, page_id TEXT, is_active INTEGER DEFAULT 0,
+                    country TEXT, account_manager TEXT,
                     last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, token_expires_at DATE
                 )
             ''')
+            
+            # Verificar e adicionar coluna de país
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'api_config' AND column_name = 'country';
+            """)
+            column_exists_country = cursor.fetchone()
+            if not column_exists_country:
+                print("Adicionando coluna 'country' em api_config (PostgreSQL)...")
+                try:
+                    cursor.execute('ALTER TABLE api_config ADD COLUMN country TEXT')
+                    conn.commit()
+                except psycopg2.Error as e_alter:
+                    conn.rollback()
+                    if "already exists" in str(e_alter).lower(): print("Coluna country já existe (ignorado).")
+                    else: print(f"Erro add coluna country: {e_alter}")
+            
+            # Verificar e adicionar coluna de responsável
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'api_config' AND column_name = 'account_manager';
+            """)
+            column_exists_manager = cursor.fetchone()
+            if not column_exists_manager:
+                print("Adicionando coluna 'account_manager' em api_config (PostgreSQL)...")
+                try:
+                    cursor.execute('ALTER TABLE api_config ADD COLUMN account_manager TEXT')
+                    conn.commit()
+                except psycopg2.Error as e_alter:
+                    conn.rollback()
+                    if "already exists" in str(e_alter).lower(): print("Coluna account_manager já existe (ignorado).")
+                    else: print(f"Erro add coluna account_manager: {e_alter}")
+            
+            # Verificar coluna de data de expiração (já existente no código)
             cursor.execute("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_schema = current_schema() AND table_name = 'api_config' AND column_name = 'token_expires_at';
@@ -321,7 +371,8 @@ def init_db():
 
 init_db()
 
-def save_api_config(name, app_id, app_secret, access_token, account_id, business_id="", page_id="", token_expires_at=None):
+def save_api_config(name, app_id, app_secret, access_token, account_id, business_id="", page_id="", 
+                    token_expires_at=None, country=None, account_manager=None):
     """Salva a configuração da API no banco de dados."""
     # Verifica quantas configs existem para definir is_active
     conn_info = get_db_connection()
@@ -347,15 +398,15 @@ def save_api_config(name, app_id, app_secret, access_token, account_id, business
             insert_query = """
                 INSERT INTO api_config
                 (name, app_id, app_secret, access_token, account_id,
-                 business_id, page_id, is_active, token_expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 business_id, page_id, is_active, token_expires_at, country, account_manager)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         else:  # PostgreSQL
             insert_query = """
                 INSERT INTO api_config
                 (name, app_id, app_secret, access_token, account_id,
-                 business_id, page_id, is_active, token_expires_at, last_updated)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                 business_id, page_id, is_active, token_expires_at, country, account_manager, last_updated)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             """
         
         params = (
@@ -363,7 +414,9 @@ def save_api_config(name, app_id, app_secret, access_token, account_id, business
             business_id if business_id else None,
             page_id if page_id else None,
             is_active,
-            expires_at_date
+            expires_at_date,
+            country, 
+            account_manager
         )
         
         cursor.execute(insert_query, params)
@@ -388,14 +441,14 @@ def get_active_api_config():
     """Obtém a configuração ativa do PostgreSQL."""
     query = """
         SELECT id, name, app_id, app_secret, access_token, account_id,
-               business_id, page_id, token_expires_at -- Coluna DATE
+               business_id, page_id, token_expires_at, country, account_manager
         FROM api_config WHERE is_active = 1 LIMIT 1
     """
     row = execute_query(query, fetch_one=True)
     if row:
         # Mapeia colunas para dicionário
         keys = ["id", "name", "app_id", "app_secret", "access_token", "account_id",
-                "business_id", "page_id", "token_expires_at"]
+                "business_id", "page_id", "token_expires_at", "country", "account_manager"]
         return dict(zip(keys, row))
     return None
 
@@ -404,14 +457,14 @@ def get_all_api_configs():
     """Obtém todas as configurações do PostgreSQL."""
     query = """
         SELECT id, name, app_id, app_secret, access_token, account_id,
-               business_id, page_id, is_active, token_expires_at
+               business_id, page_id, is_active, token_expires_at, country, account_manager
         FROM api_config ORDER BY name
     """
     rows = execute_query(query, fetch_all=True)
     configs = []
     if rows:
         keys = ["id", "name", "app_id", "app_secret", "access_token", "account_id",
-                "business_id", "page_id", "is_active", "token_expires_at"]
+                "business_id", "page_id", "is_active", "token_expires_at", "country", "account_manager"]
         for row in rows:
             configs.append(dict(zip(keys, row)))
     return configs
@@ -767,6 +820,76 @@ def get_facebook_campaigns_cached(account_id_from_main): # O argumento ainda é 
         print(f"ERRO API/Outro [get_facebook_campaigns_cached]: {traceback.format_exc()}")
         return None # Retorna None para indicar erro grave
 
+def get_facebook_campaigns_for_multiple_accounts(config_list):
+    """Busca campanhas de múltiplas contas."""
+    all_campaigns = []
+    
+    for config in config_list:
+        try:
+            # Inicializar API para esta conta
+            FacebookAdsApi.init(
+                app_id=config["app_id"],
+                app_secret=config["app_secret"],
+                access_token=config["access_token"],
+                api_version='v22.0'
+            )
+            
+            account_id = config["account_id"]
+            print(f"Buscando campanhas da conta: {config['name']} (ID: {account_id})")
+            
+            # Buscar campanhas desta conta
+            account = AdAccount(f'act_{account_id}')
+            fields_to_fetch = [
+                'id', 'name', 'status', 'objective', 'created_time',
+                'start_time', 'stop_time', 'daily_budget', 'lifetime_budget',
+                'effective_status', 'buying_type', 'budget_remaining'
+            ]
+            
+            campaigns_raw = list(account.get_campaigns(fields=fields_to_fetch, params={'limit': 500}))
+            
+            if not campaigns_raw:
+                print(f"Nenhuma campanha encontrada para conta {config['name']}")
+                continue
+                
+            campaign_ids = [campaign.get("id") for campaign in campaigns_raw if campaign.get("id")]
+            
+            # Buscar insights
+            insights_data = get_campaign_insights_cached(account_id, tuple(campaign_ids), "last_7d")
+            insights_map = {insight.get("campaign_id"): insight for insight in insights_data if insight.get("campaign_id")}
+            
+            for campaign in campaigns_raw:
+                campaign_dict = campaign.export_all_data()
+                campaign_id = campaign_dict.get("id")
+                if not campaign_id: 
+                    continue
+                    
+                # Adicionar informações da conta
+                campaign_dict["account_name"] = config["name"]
+                campaign_dict["account_id"] = account_id
+                campaign_dict["country"] = config.get("country", "")
+                campaign_dict["account_manager"] = config.get("account_manager", "")
+                
+                # Adicionar insights
+                campaign_insights = insights_map.get(campaign_id)
+                insights_default = {
+                    "cpa": 0.0, "purchases": 0, "roas": 0.0, "purchase_value": 0.0,
+                    "spend": 0.0, "clicks": 0, "impressions": 0, "ctr": 0.0, "cpc": 0.0
+                }
+                campaign_dict["insights"] = {**insights_default, **(campaign_insights or {})}
+                
+                # Converter orçamento
+                daily_budget_str = campaign_dict.get('daily_budget')
+                lifetime_budget_str = campaign_dict.get('lifetime_budget')
+                campaign_dict['daily_budget'] = int(daily_budget_str) if daily_budget_str and daily_budget_str.isdigit() else 0
+                campaign_dict['lifetime_budget'] = int(lifetime_budget_str) if lifetime_budget_str and lifetime_budget_str.isdigit() else 0
+                
+                all_campaigns.append(campaign_dict)
+                
+        except Exception as e:
+            print(f"Erro ao buscar campanhas da conta {config.get('name')}: {e}")
+            continue
+            
+    return all_campaigns
 
 # --- Funções de Regras (Adaptadas para PostgreSQL) ---
 def add_rule(name, description, primary_metric, primary_operator,
@@ -1803,66 +1926,90 @@ def show_gerenciador_page():
     all_configs = get_all_api_configs()
     print(f"DEBUG: Config ativa: {active_config.get('id') if active_config else 'Nenhuma'}. Total de configs: {len(all_configs)}")
 
-    # Seletor de Conta
-    col_empty_space, col_selector_widget = st.columns([3, 1])
-    with col_selector_widget:
-        if all_configs:
-            config_options = {cfg['id']: f"{cfg['name']} ({cfg['account_id']})" for cfg in all_configs}
-            active_config_id = active_config['id'] if active_config else None
-            default_index = 0
-            if active_config_id in config_options:
-                try: default_index = list(config_options.keys()).index(active_config_id)
-                except ValueError: default_index = 0
-            else:
-                # Se a ativa não está nas opções (ex: foi deletada?), seleciona a primeira
-                 print(f"AVISO: Config ativa ID {active_config_id} não encontrada nas opções. Selecionando a primeira.")
-                 default_index = 0
+    # Extrair opções de filtro
+    countries = sorted(list(set([cfg.get('country') for cfg in all_configs if cfg.get('country')])))
+    managers = sorted(list(set([cfg.get('account_manager') for cfg in all_configs if cfg.get('account_manager')])))
+    
+    # Adicionar opção "Todos" para os filtros
+    countries = ["Todos"] + countries
+    managers = ["Todos"] + managers
 
-            print(f"DEBUG: Criando selectbox. Ativa no cache: {active_config_id}. Default index: {default_index}")
+    # Layout com três colunas
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
+    
+    with col_filter1:
+        st.markdown("**País:**")
+        selected_country = st.selectbox("", options=countries, key="country_filter", label_visibility="collapsed")
+    
+    with col_filter2:
+        st.markdown("**Responsável:**")
+        selected_manager = st.selectbox("", options=managers, key="manager_filter", label_visibility="collapsed")
+    
+    with col_filter3:
+        st.markdown("**Conta:**")
+        if all_configs:
+            # Filtrar configurações baseado nos filtros
+            filtered_configs = all_configs
+            if selected_country != "Todos":
+                filtered_configs = [cfg for cfg in filtered_configs if cfg.get('country') == selected_country]
+            if selected_manager != "Todos":
+                filtered_configs = [cfg for cfg in filtered_configs if cfg.get('account_manager') == selected_manager]
+            
+            # Se não houver configs após filtros, mostrar todas
+            if not filtered_configs:
+                filtered_configs = all_configs
+                
+            # Opções do selectbox (adiciona "Todas as contas")
+            config_options = {"all": "Todas as contas"}
+            for cfg in filtered_configs:
+                config_options[cfg['id']] = f"{cfg['name']} ({cfg['account_id']})"
+            
+            active_config_id = active_config['id'] if active_config else None
+            
+            # Índice padrão
+            default_index = 0  # "Todas as contas"
+            if active_config_id in config_options:
+                try: 
+                    default_index = list(config_options.keys()).index(active_config_id)
+                except ValueError: 
+                    default_index = 0
+            
             selected_config_id = st.selectbox(
-                "Conta:", options=list(config_options.keys()),
+                "", options=list(config_options.keys()),
                 format_func=lambda x: config_options.get(x, f"ID {x} Inválido"),
                 index=default_index, label_visibility="collapsed", key="account_selector"
             )
-            print(f"DEBUG: Selectbox retornou ID: {selected_config_id}")
 
-            # --- Lógica de Troca de Conta (Modificada) ---
-            # Compara o ID selecionado AGORA com o ID que estava ativo ANTES (do cache)
-            if selected_config_id != active_config_id:
-                print(f"--- DETECTADA MUDANÇA DE CONTA ---")
-                print(f"DEBUG: ID selecionado ({selected_config_id}) é diferente do ativo no cache ({active_config_id}).")
-                print(f"DEBUG: Chamando set_active_api_config({selected_config_id})...")
-                # Chama a função para atualizar o status 'is_active' no banco de dados
-                if set_active_api_config(selected_config_id): # Usa a versão OTIMIZADA desta função
-                     st.toast(f"Conta '{config_options.get(selected_config_id, 'Selecionada')}' ativada!", icon="🔄")
-                     # Limpeza de cache ESSENCIAL após mudar a conta ativa
-                     print("DEBUG: set_active_api_config bem-sucedido. Limpando caches relevantes...")
-                     get_active_api_config.clear()
-                     get_all_api_configs.clear()
-                     if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
-                     if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
-                     # Limpar regras/execuções geralmente não é necessário, mas pode deixar se quiser
-                     # if 'get_all_rules_cached' in globals(): get_all_rules_cached.clear()
-                     # if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
-                     print("DEBUG: Caches limpos. Streamlit deve re-executar automaticamente.")
-                     # !!! NÃO HÁ st.rerun() explícito AQUI !!!
-                     # O próprio Streamlit vai re-executar o script porque o selectbox mudou.
-                else:
-                     st.error("Falha ao ativar a conta no banco de dados.")
-                     print(f"DEBUG: set_active_api_config({selected_config_id}) retornou False.")
+            # Definir modo de visualização
+            if selected_config_id == "all":
+                st.session_state["view_all_accounts"] = True
+                st.session_state["filtered_configs"] = filtered_configs
             else:
-                # Caso onde o selectbox está mostrando o mesmo ID que já estava ativo
-                # print(f"DEBUG: ID selecionado ({selected_config_id}) é o mesmo que já estava ativo. Nenhuma ação de troca necessária.")
-                pass
-            # --- Fim da Lógica de Troca de Conta ---
-
+                st.session_state["view_all_accounts"] = False
+                # Ativar conta selecionada se diferente da atual
+                if selected_config_id != active_config_id:
+                    print(f"--- DETECTADA MUDANÇA DE CONTA ---")
+                    print(f"DEBUG: ID selecionado ({selected_config_id}) é diferente do ativo no cache ({active_config_id}).")
+                    print(f"DEBUG: Chamando set_active_api_config({selected_config_id})...")
+                    # Chama a função para atualizar o status 'is_active' no banco de dados
+                    if set_active_api_config(selected_config_id): # Usa a versão OTIMIZADA desta função
+                         st.toast(f"Conta '{config_options.get(selected_config_id, 'Selecionada')}' ativada!", icon="🔄")
+                         # Limpeza de cache ESSENCIAL após mudar a conta ativa
+                         print("DEBUG: set_active_api_config bem-sucedido. Limpando caches relevantes...")
+                         get_active_api_config.clear()
+                         get_all_api_configs.clear()
+                         if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                         if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
+                    else:
+                         st.error("Falha ao ativar a conta no banco de dados.")
+                         print(f"DEBUG: set_active_api_config({selected_config_id}) retornou False.")
         elif not active_config and get_db_connection() is not None: # Se não há configs e DB está ok
              st.info("Nenhuma conta configurada...")
         elif get_db_connection() is None: # Se a conexão inicial falhou
              st.warning("⚠️ DB offline.")
 
     # Mensagem se não há conta ativa configurada
-    if not active_config and get_db_connection() is not None:
+    if not active_config and not st.session_state.get("view_all_accounts", False) and get_db_connection() is not None:
         st.warning("⚠️ Nenhuma conta do Facebook Ads está ativa. Vá para a aba '🔧 Configurações' para adicionar ou ativar uma conta.")
         # Poderia parar aqui com st.stop() se quisesse impedir o resto da página de carregar sem conta ativa
         # st.stop()
@@ -1878,28 +2025,41 @@ def show_gerenciador_page():
         # ==========================
         with tabs[0]:
             print("DEBUG: Entrando na Aba Campanhas")
-            if not active_config:
+            
+            # Verificar se estamos no modo "Todas as contas"
+            view_all_accounts = st.session_state.get("view_all_accounts", False)
+            filtered_configs = st.session_state.get("filtered_configs", [])
+            
+            if not active_config and not view_all_accounts:
                 st.info("Selecione ou configure uma conta ativa na aba '🔧 Configurações' para ver os dados das campanhas.")
             else:
                 # --- Obter dados das campanhas e regras ---
-                account_id_para_buscar = active_config.get("account_id")
-                print(f"DEBUG: Aba Campanhas - Buscando dados para conta ativa: {account_id_para_buscar}")
                 data_placeholder = st.empty()
-                data_placeholder.info(f"🔄 Carregando dados das campanhas da conta {account_id_para_buscar}...")
+                
+                # Lógica para exibir campanhas de todas as contas ou apenas da conta ativa
+                if view_all_accounts and filtered_configs:
+                    data_placeholder.info(f"🔄 Carregando dados de {len(filtered_configs)} contas...")
+                    # Buscar campanhas de todas as contas filtradas
+                    campaigns = get_facebook_campaigns_for_multiple_accounts(filtered_configs)
+                    data_placeholder.empty()
+                    
+                    if not campaigns:
+                        st.warning("Nenhuma campanha encontrada nas contas selecionadas.")
+                else:
+                    # Código original para buscar campanhas da conta ativa
+                    account_id_para_buscar = active_config.get("account_id")
+                    data_placeholder.info(f"🔄 Carregando dados das campanhas da conta {account_id_para_buscar}...")
+                    campaigns = get_facebook_campaigns_cached(account_id_para_buscar)
+                    data_placeholder.empty()
 
-                # Chama as funções que buscam dados (elas usarão cache se disponível)
-                campaigns = get_facebook_campaigns_cached(account_id_para_buscar)
                 rules = get_all_rules_cached()
-                data_placeholder.empty() # Remove a mensagem de "carregando"
 
                 if campaigns is None:
                     st.warning("Não foi possível carregar os dados das campanhas. Verifique a aba 'Configurações', o Token de Acesso e a conexão com a API do Facebook.")
                 elif not campaigns:
-                    st.info(f"ℹ️ Nenhuma campanha encontrada para a conta ativa (act_{account_id_para_buscar}).")
+                    st.info(f"ℹ️ Nenhuma campanha encontrada para a conta ativa.")
                 else:
-                    print(f"DEBUG: {len(campaigns)} campanhas encontradas para a conta {account_id_para_buscar}.")
                     # --- Contagens e Filtro ---
-                    # (Seu código original para contagens e filtro de status aqui)
                     total_campaigns = len(campaigns)
                     active_statuses = ['ACTIVE']
                     active_campaigns_list = [c for c in campaigns if isinstance(c, dict) and c.get('effective_status', c.get('status')) in active_statuses]
@@ -1926,166 +2086,331 @@ def show_gerenciador_page():
                     if not filtered_campaigns:
                         st.info(f"Nenhuma campanha encontrada com o status '{status_filter}'.")
                     else:
-                        # Cabeçalho da tabela de campanhas
-                        col_h = st.columns([3, 1.2, 0.8, 0.8, 0.8, 1.2, 2.5])
-                        col_h[0].markdown("**Campanha**")
-                        col_h[1].markdown("<div style='text-align: center;'><b>Status</b></div>", unsafe_allow_html=True)
-                        col_h[2].markdown("<div style='text-align: center;'><b>CPA</b></div>", unsafe_allow_html=True)
-                        col_h[3].markdown("<div style='text-align: center;'><b>Compras</b></div>", unsafe_allow_html=True)
-                        col_h[4].markdown("<div style='text-align: center;'><b>ROAS</b></div>", unsafe_allow_html=True)
-                        col_h[5].markdown("<div style='text-align: center;'><b>Ação Rápida</b></div>", unsafe_allow_html=True)
-                        col_h[6].markdown("**Regras Aplicáveis**")
-                        st.markdown("<hr style='margin: 0.1rem 0;'>", unsafe_allow_html=True)
+                        # Se estamos no modo "Todas as contas", agrupar campanhas por conta
+                        if st.session_state.get("view_all_accounts", False):
+                            # Agrupar campanhas por account_id
+                            campaigns_by_account = {}
+                            for campaign in filtered_campaigns:
+                                account_id = campaign.get("account_id")
+                                account_name = campaign.get("account_name", f"Conta {account_id}")
+                                if account_id not in campaigns_by_account:
+                                    campaigns_by_account[account_id] = {
+                                        "name": account_name,
+                                        "campaigns": []
+                                    }
+                                campaigns_by_account[account_id]["campaigns"].append(campaign)
+                            
+                            # Para cada conta, mostrar as campanhas
+                            for account_id, account_data in campaigns_by_account.items():
+                                # Cabeçalho da conta
+                                st.markdown(f"### Conta: {account_data['name']}")
+                                
+                                # Cabeçalho da tabela de campanhas
+                                col_h = st.columns([3, 1.2, 0.8, 0.8, 0.8, 1.2, 2.5])
+                                col_h[0].markdown("**Campanha**")
+                                col_h[1].markdown("<div style='text-align: center;'><b>Status</b></div>", unsafe_allow_html=True)
+                                col_h[2].markdown("<div style='text-align: center;'><b>CPA</b></div>", unsafe_allow_html=True)
+                                col_h[3].markdown("<div style='text-align: center;'><b>Compras</b></div>", unsafe_allow_html=True)
+                                col_h[4].markdown("<div style='text-align: center;'><b>ROAS</b></div>", unsafe_allow_html=True)
+                                col_h[5].markdown("<div style='text-align: center;'><b>Ação Rápida</b></div>", unsafe_allow_html=True)
+                                col_h[6].markdown("**Regras Aplicáveis**")
+                                st.markdown("<hr style='margin: 0.1rem 0;'>", unsafe_allow_html=True)
+                                
+                                # Loop para exibir cada campanha desta conta
+                                for campaign in account_data["campaigns"]:
+                                    if not isinstance(campaign, dict): continue
+                                    campaign_id = campaign.get('id')
+                                    if not campaign_id: continue
 
-                        # Loop para exibir cada campanha
-                        for campaign in filtered_campaigns:
-                            # (Seu código original para exibir cada linha da campanha aqui)
-                            # Incluindo: Nome, Status, Métricas, Botão Pausar/Ativar, Regras Aplicáveis
-                            if not isinstance(campaign, dict): continue
-                            campaign_id = campaign.get('id')
-                            if not campaign_id: continue
+                                    # Usar chaves únicas combinando account_id e campaign_id
+                                    unique_prefix = f"{account_id}_{campaign_id}"
+                                    
+                                    cols = st.columns([3, 1.2, 0.8, 0.8, 0.8, 1.2, 2.5])
 
-                            cols = st.columns([3, 1.2, 0.8, 0.8, 0.8, 1.2, 2.5])
+                                    # Col 0: Nome, ID e Orçamento
+                                    cols[0].markdown(f"**{campaign.get('name', 'N/A')}**")
+                                    cols[0].caption(f"ID: `{campaign_id}`")
+                                    
+                                    budget_text = ""
+                                    daily_budget_cents = campaign.get('daily_budget', 0)
+                                    lifetime_budget_cents = campaign.get('lifetime_budget', 0)
+                                    if daily_budget_cents > 0: budget_text = f"Diário: R$ {daily_budget_cents/100:.2f}"
+                                    elif lifetime_budget_cents > 0: budget_text = f"Total: R$ {lifetime_budget_cents/100:.2f}"
+                                    if budget_text: cols[0].caption(budget_text)
 
-                            # Col 0: Nome, ID e Orçamento
-                            cols[0].markdown(f"**{campaign.get('name', 'N/A')}**")
-                            cols[0].caption(f"ID: `{campaign_id}`")
-                            budget_text = ""
-                            daily_budget_cents = campaign.get('daily_budget', 0)
-                            lifetime_budget_cents = campaign.get('lifetime_budget', 0)
-                            if daily_budget_cents > 0: budget_text = f"Diário: R$ {daily_budget_cents/100:.2f}"
-                            elif lifetime_budget_cents > 0: budget_text = f"Total: R$ {lifetime_budget_cents/100:.2f}"
-                            if budget_text: cols[0].caption(budget_text)
+                                    # Col 1: Status Efetivo
+                                    effective_status = campaign.get("effective_status", campaign.get("status", "UNKNOWN"))
+                                    status_map = {
+                                        'ACTIVE': ("success-badge", "ATIVO"), 'PAUSED': ("error-badge", "PAUSADO"),
+                                        'ARCHIVED': ("inactive-badge", "ARQUIVADO"), 'DELETED': ("inactive-badge", "DELETADO"),
+                                        'WITH_ISSUES': ("warning-badge", "PROBLEMAS"),
+                                        'CAMPAIGN_PAUSED': ("error-badge", "PAUSADA"),
+                                        'PENDING_REVIEW': ("info-badge", "REVISÃO"),
+                                        'DISAPPROVED': ("error-badge", "REPROVADA"),
+                                        'PREPARING': ("info-badge", "PREPARANDO"),
+                                        'ADSET_PAUSED': ("error-badge", "CONJ.PAUSADO"),
+                                        'UNKNOWN': ("inactive-badge", "DESCONHECIDO")
+                                    }
+                                    status_class, status_text = status_map.get(effective_status, ("inactive-badge", effective_status))
+                                    cols[1].markdown(f"<div style='text-align: center;'><span class='{status_class}'>{status_text}</span></div>", unsafe_allow_html=True)
 
-                            # Col 1: Status Efetivo
-                            effective_status = campaign.get("effective_status", campaign.get("status", "UNKNOWN"))
-                            status_map = {
-                                'ACTIVE': ("success-badge", "ATIVO"), 'PAUSED': ("error-badge", "PAUSADO"),
-                                'ARCHIVED': ("inactive-badge", "ARQUIVADO"), 'DELETED': ("inactive-badge", "DELETADO"),
-                                'WITH_ISSUES': ("warning-badge", "PROBLEMAS"),
-                                'CAMPAIGN_PAUSED': ("error-badge", "PAUSADA"), # Exemplo de outro status
-                                'PENDING_REVIEW': ("info-badge", "REVISÃO"),
-                                'DISAPPROVED': ("error-badge", "REPROVADA"),
-                                'PREPARING': ("info-badge", "PREPARANDO"),
-                                'ADSET_PAUSED': ("error-badge", "CONJ.PAUSADO"),
-                                'UNKNOWN': ("inactive-badge", "DESCONHECIDO")
-                            }
-                            status_class, status_text = status_map.get(effective_status, ("inactive-badge", effective_status))
-                            cols[1].markdown(f"<div style='text-align: center;'><span class='{status_class}'>{status_text}</span></div>", unsafe_allow_html=True)
+                                    # Col 2-4: Métricas
+                                    cpa_value = campaign.get("insights", {}).get("cpa", 0.0)
+                                    cols[2].markdown(f"<div style='text-align: center;'>R$ {cpa_value:.2f}</div>", unsafe_allow_html=True)
 
-                            # Col 2: CPA
-                            cpa_value = campaign.get("insights", {}).get("cpa", 0.0)
-                            cols[2].markdown(f"<div style='text-align: center;'>R$ {cpa_value:.2f}</div>", unsafe_allow_html=True)
+                                    purchases_value = campaign.get("insights", {}).get("purchases", 0)
+                                    cols[3].markdown(f"<div style='text-align: center;'>{purchases_value}</div>", unsafe_allow_html=True)
 
-                            # Col 3: Compras
-                            purchases_value = campaign.get("insights", {}).get("purchases", 0)
-                            cols[3].markdown(f"<div style='text-align: center;'>{purchases_value}</div>", unsafe_allow_html=True)
+                                    roas_value = campaign.get("insights", {}).get("roas", 0.0)
+                                    cols[4].markdown(f"<div style='text-align: center;'>{roas_value:.2f}x</div>", unsafe_allow_html=True)
 
-                            # Col 4: ROAS
-                            roas_value = campaign.get("insights", {}).get("roas", 0.0)
-                            cols[4].markdown(f"<div style='text-align: center;'>{roas_value:.2f}x</div>", unsafe_allow_html=True)
-
-                            # Col 5: Ação Rápida (Pausar/Ativar Manualmente)
-                            # ATENÇÃO: Os botões aqui dentro também causam re-execução.
-                            # A limpeza de cache DENTRO deles está correta.
-                            with cols[5]:
-                                action_button_placeholder = st.empty()
-                                with action_button_placeholder.container(): # Usar container pode ajudar
-                                    if effective_status in ["ACTIVE", "LIMITED"]: # Adicione outros status 'ativos' se necessário
-                                        if st.button("⏸️ Pausar", key=f"pause_{campaign_id}", type="secondary", use_container_width=True, help="Pausar esta campanha"):
-                                            try:
-                                                Campaign(campaign_id).api_update(params={'status': Campaign.Status.paused})
-                                                st.success("Campanha pausada!")
-                                                log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), True, "Pausado manualmente via UI")
-                                                # Limpeza de cache após ação manual
-                                                if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
-                                                if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
-                                                if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
-                                                time.sleep(1.5) # Pausa para API processar antes de rerodar
-                                                st.rerun() # Rerun EXPLÍCITO aqui é necessário após ação manual
-                                            except Exception as e:
-                                                st.error(f"Erro ao pausar: {e}")
-                                                log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao pausar via UI: {e}")
-                                    elif effective_status == "PAUSED":
-                                        if st.button("▶️ Ativar", key=f"activate_{campaign_id}", type="primary", use_container_width=True, help="Ativar esta campanha"):
-                                            try:
-                                                Campaign(campaign_id).api_update(params={'status': Campaign.Status.active})
-                                                st.success("Campanha ativada!")
-                                                log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), True, "Ativado manualmente via UI")
-                                                # Limpeza de cache após ação manual
-                                                if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
-                                                if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
-                                                if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
-                                                time.sleep(1.5) # Pausa para API processar
-                                                st.rerun() # Rerun EXPLÍCITO aqui é necessário após ação manual
-                                            except Exception as e:
-                                                st.error(f"Erro ao ativar: {e}")
-                                                log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao ativar via UI: {e}")
-                                    else:
-                                        # Se não for nem ativo nem pausado, pode não ter ação rápida
-                                        st.caption("-")
-
-                            # Col 6: Regras Aplicáveis (Execução Manual de Regra)
-                            # ATENÇÃO: O botão "Aplicar" aqui dentro também causa re-execução.
-                            # A limpeza de cache DENTRO dele está correta.
-                            with cols[6]:
-                                rules_list_placeholder = st.empty()
-                                with rules_list_placeholder.container(): # Usar container
-                                    applicable_rules = []
-                                    # Simular apenas se a campanha estiver em um estado que permita ações
-                                    can_simulate = effective_status in ['ACTIVE', 'PAUSED', 'LIMITED'] # Adicione outros se necessário
-                                    if can_simulate and (daily_budget_cents > 0 or lifetime_budget_cents > 0):
-                                        try:
-                                            active_rules = [r for r in rules if r.get('is_active')]
-                                            applicable_rules = simulate_rule_application(campaign, active_rules)
-                                        except Exception as sim_err: st.caption(f"Erro simulação: {sim_err}")
-
-                                    if applicable_rules:
-                                        for rule_sim in applicable_rules:
-                                            if not isinstance(rule_sim, dict): continue
-                                            rule_id_sim = rule_sim.get('rule_id')
-                                            if not rule_id_sim: continue
-
-                                            # Define se o botão "Aplicar" deve estar habilitado
-                                            # Ex: Habilitar se a campanha está ativa, OU se a ação da regra é ativar
-                                            rule_action_sim_text = rule_sim.get('action', '')
-                                            enable_apply_button = effective_status == 'ACTIVE' or 'Ativar campanha' in rule_action_sim_text
-
-                                            rule_cols = st.columns([4, 1.5])
-                                            with rule_cols[0]:
-                                                 rule_name_sim = rule_sim.get('rule_name', 'N/A')
-                                                 new_budget_sim = rule_sim.get('new_budget_simulated')
-                                                 budget_sim_text = f" -> R$ {new_budget_sim/100:.2f}" if new_budget_sim is not None else ""
-                                                 st.markdown(f"<small><i>{rule_name_sim} ({rule_action_sim_text}{budget_sim_text})</i></small>", unsafe_allow_html=True)
-
-                                            with rule_cols[1]:
-                                                if st.button("Aplicar", key=f"apply_{campaign_id}_{rule_id_sim}",
-                                                            help=f"Executar regra '{rule_name_sim}' nesta campanha",
-                                                            use_container_width=True, type="secondary",
-                                                            disabled=not enable_apply_button): # Usa a variável de habilitação
-                                                    st.info(f"Aplicando regra '{rule_name_sim}'...")
-                                                    success_exec, message_exec = execute_rule(campaign_id, rule_id_sim)
-                                                    if success_exec:
-                                                        st.success(f"✅ {message_exec}")
-                                                        st.toast(f"Regra '{rule_name_sim}' aplicada!", icon="🎉")
+                                    # Col 5: Ação Rápida (com chaves únicas)
+                                    with cols[5]:
+                                        action_button_placeholder = st.empty()
+                                        with action_button_placeholder.container():
+                                            if effective_status in ["ACTIVE", "LIMITED"]:
+                                                if st.button("⏸️ Pausar", key=f"pause_{unique_prefix}", type="secondary", use_container_width=True, help="Pausar esta campanha"):
+                                                    try:
+                                                        Campaign(campaign_id).api_update(params={'status': Campaign.Status.paused})
+                                                        st.success("Campanha pausada!")
+                                                        log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), True, "Pausado manualmente via UI")
                                                         # Limpeza de cache após ação manual
                                                         if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
                                                         if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
                                                         if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
-                                                        time.sleep(2) # Pausa para API
-                                                        st.rerun() # Rerun EXPLÍCITO aqui é necessário após ação manual
-                                                    else:
-                                                        st.error(f"❌ {message_exec}")
-                                                        st.toast(f"Falha ao aplicar regra '{rule_name_sim}'!", icon="🔥")
-                                    # Se não há regras aplicáveis
-                                    elif can_simulate:
-                                        st.caption("<div style='text-align: center; font-style: italic; font-size: 0.8em;'>Nenhuma regra ativa aplicável</div>", unsafe_allow_html=True)
-                                    else:
-                                         st.caption("<div style='text-align: center; font-style: italic; font-size: 0.8em;'>-</div>", unsafe_allow_html=True)
+                                                        time.sleep(1.5)
+                                                        st.rerun()
+                                                    except Exception as e:
+                                                        st.error(f"Erro ao pausar: {e}")
+                                                        log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao pausar via UI: {e}")
+                                            elif effective_status == "PAUSED":
+                                                if st.button("▶️ Ativar", key=f"activate_{unique_prefix}", type="primary", use_container_width=True, help="Ativar esta campanha"):
+                                                    try:
+                                                        Campaign(campaign_id).api_update(params={'status': Campaign.Status.active})
+                                                        st.success("Campanha ativada!")
+                                                        log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), True, "Ativado manualmente via UI")
+                                                        # Limpeza de cache após ação manual
+                                                        if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                                        if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
+                                                        if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
+                                                        time.sleep(1.5)
+                                                        st.rerun()
+                                                    except Exception as e:
+                                                        st.error(f"Erro ao ativar: {e}")
+                                                        log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao ativar via UI: {e}")
+                                            else:
+                                                st.caption("-")
 
+                                    # Col 6: Regras Aplicáveis (com chaves únicas)
+                                    with cols[6]:
+                                        rules_list_placeholder = st.empty()
+                                        with rules_list_placeholder.container():
+                                            applicable_rules = []
+                                            can_simulate = effective_status in ['ACTIVE', 'PAUSED', 'LIMITED']
+                                            if can_simulate and (daily_budget_cents > 0 or lifetime_budget_cents > 0):
+                                                try:
+                                                    active_rules = [r for r in rules if r.get('is_active')]
+                                                    applicable_rules = simulate_rule_application(campaign, active_rules)
+                                                except Exception as sim_err: st.caption(f"Erro simulação: {sim_err}")
 
-                            # Linha divisória entre campanhas
-                            st.markdown("<hr style='margin: 0.3rem 0;'>", unsafe_allow_html=True)
+                                            if applicable_rules:
+                                                for rule_sim in applicable_rules:
+                                                    if not isinstance(rule_sim, dict): continue
+                                                    rule_id_sim = rule_sim.get('rule_id')
+                                                    if not rule_id_sim: continue
+
+                                                    rule_action_sim_text = rule_sim.get('action', '')
+                                                    enable_apply_button = effective_status == 'ACTIVE' or 'Ativar campanha' in rule_action_sim_text
+
+                                                    rule_cols = st.columns([4, 1.5])
+                                                    with rule_cols[0]:
+                                                        rule_name_sim = rule_sim.get('rule_name', 'N/A')
+                                                        new_budget_sim = rule_sim.get('new_budget_simulated')
+                                                        budget_sim_text = f" -> R$ {new_budget_sim/100:.2f}" if new_budget_sim is not None else ""
+                                                        st.markdown(f"<small><i>{rule_name_sim} ({rule_action_sim_text}{budget_sim_text})</i></small>", unsafe_allow_html=True)
+
+                                                    with rule_cols[1]:
+                                                        # Usar chave única para o botão de aplicar regra
+                                                        if st.button("Aplicar", key=f"apply_{unique_prefix}_{rule_id_sim}",
+                                                                    help=f"Executar regra '{rule_name_sim}' nesta campanha",
+                                                                    use_container_width=True, type="secondary",
+                                                                    disabled=not enable_apply_button):
+                                                            st.info(f"Aplicando regra '{rule_name_sim}'...")
+                                                            success_exec, message_exec = execute_rule(campaign_id, rule_id_sim)
+                                                            if success_exec:
+                                                                st.success(f"✅ {message_exec}")
+                                                                st.toast(f"Regra '{rule_name_sim}' aplicada!", icon="🎉")
+                                                                # Limpeza de cache após ação manual
+                                                                if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                                                if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
+                                                                if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
+                                                                time.sleep(2)
+                                                                st.rerun()
+                                                            else:
+                                                                st.error(f"❌ {message_exec}")
+                                                                st.toast(f"Falha ao aplicar regra '{rule_name_sim}'!", icon="🔥")
+                                            elif can_simulate:
+                                                st.caption("<div style='text-align: center; font-style: italic; font-size: 0.8em;'>Nenhuma regra ativa aplicável</div>", unsafe_allow_html=True)
+                                            else:
+                                                st.caption("<div style='text-align: center; font-style: italic; font-size: 0.8em;'>-</div>", unsafe_allow_html=True)
+
+                                    # Linha divisória entre campanhas
+                                    st.markdown("<hr style='margin: 0.3rem 0;'>", unsafe_allow_html=True)
+                                
+                                # Divisor entre contas (mais proeminente)
+                                st.markdown("<hr style='margin: 2rem 0; border-top: 2px solid #f0f2f6;'>", unsafe_allow_html=True)
+                                
+                        else:
+                            # Exibição original para uma única conta
+                            # Cabeçalho da tabela de campanhas
+                            col_h = st.columns([3, 1.2, 0.8, 0.8, 0.8, 1.2, 2.5])
+                            col_h[0].markdown("**Campanha**")
+                            col_h[1].markdown("<div style='text-align: center;'><b>Status</b></div>", unsafe_allow_html=True)
+                            col_h[2].markdown("<div style='text-align: center;'><b>CPA</b></div>", unsafe_allow_html=True)
+                            col_h[3].markdown("<div style='text-align: center;'><b>Compras</b></div>", unsafe_allow_html=True)
+                            col_h[4].markdown("<div style='text-align: center;'><b>ROAS</b></div>", unsafe_allow_html=True)
+                            col_h[5].markdown("<div style='text-align: center;'><b>Ação Rápida</b></div>", unsafe_allow_html=True)
+                            col_h[6].markdown("**Regras Aplicáveis**")
+                            st.markdown("<hr style='margin: 0.1rem 0;'>", unsafe_allow_html=True)
+
+                            # Loop para exibir cada campanha
+                            for campaign in filtered_campaigns:
+                                if not isinstance(campaign, dict): continue
+                                campaign_id = campaign.get('id')
+                                if not campaign_id: continue
+
+                                cols = st.columns([3, 1.2, 0.8, 0.8, 0.8, 1.2, 2.5])
+
+                                # Col 0: Nome, ID e Orçamento
+                                cols[0].markdown(f"**{campaign.get('name', 'N/A')}**")
+                                cols[0].caption(f"ID: `{campaign_id}`")
+                                
+                                budget_text = ""
+                                daily_budget_cents = campaign.get('daily_budget', 0)
+                                lifetime_budget_cents = campaign.get('lifetime_budget', 0)
+                                if daily_budget_cents > 0: budget_text = f"Diário: R$ {daily_budget_cents/100:.2f}"
+                                elif lifetime_budget_cents > 0: budget_text = f"Total: R$ {lifetime_budget_cents/100:.2f}"
+                                if budget_text: cols[0].caption(budget_text)
+
+                                # Col 1: Status Efetivo
+                                effective_status = campaign.get("effective_status", campaign.get("status", "UNKNOWN"))
+                                status_map = {
+                                    'ACTIVE': ("success-badge", "ATIVO"), 'PAUSED': ("error-badge", "PAUSADO"),
+                                    'ARCHIVED': ("inactive-badge", "ARQUIVADO"), 'DELETED': ("inactive-badge", "DELETADO"),
+                                    'WITH_ISSUES': ("warning-badge", "PROBLEMAS"),
+                                    'CAMPAIGN_PAUSED': ("error-badge", "PAUSADA"),
+                                    'PENDING_REVIEW': ("info-badge", "REVISÃO"),
+                                    'DISAPPROVED': ("error-badge", "REPROVADA"),
+                                    'PREPARING': ("info-badge", "PREPARANDO"),
+                                    'ADSET_PAUSED': ("error-badge", "CONJ.PAUSADO"),
+                                    'UNKNOWN': ("inactive-badge", "DESCONHECIDO")
+                                }
+                                status_class, status_text = status_map.get(effective_status, ("inactive-badge", effective_status))
+                                cols[1].markdown(f"<div style='text-align: center;'><span class='{status_class}'>{status_text}</span></div>", unsafe_allow_html=True)
+
+                                # Col 2: CPA
+                                cpa_value = campaign.get("insights", {}).get("cpa", 0.0)
+                                cols[2].markdown(f"<div style='text-align: center;'>R$ {cpa_value:.2f}</div>", unsafe_allow_html=True)
+
+                                # Col 3: Compras
+                                purchases_value = campaign.get("insights", {}).get("purchases", 0)
+                                cols[3].markdown(f"<div style='text-align: center;'>{purchases_value}</div>", unsafe_allow_html=True)
+
+                                # Col 4: ROAS
+                                roas_value = campaign.get("insights", {}).get("roas", 0.0)
+                                cols[4].markdown(f"<div style='text-align: center;'>{roas_value:.2f}x</div>", unsafe_allow_html=True)
+
+                                # Col 5: Ação Rápida (Pausar/Ativar Manualmente)
+                                with cols[5]:
+                                    action_button_placeholder = st.empty()
+                                    with action_button_placeholder.container():
+                                        if effective_status in ["ACTIVE", "LIMITED"]:
+                                            if st.button("⏸️ Pausar", key=f"pause_{campaign_id}", type="secondary", use_container_width=True, help="Pausar esta campanha"):
+                                                try:
+                                                    Campaign(campaign_id).api_update(params={'status': Campaign.Status.paused})
+                                                    st.success("Campanha pausada!")
+                                                    log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), True, "Pausado manualmente via UI")
+                                                    # Limpeza de cache após ação manual
+                                                    if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                                    if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
+                                                    if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
+                                                    time.sleep(1.5)
+                                                    st.rerun()
+                                                except Exception as e:
+                                                    st.error(f"Erro ao pausar: {e}")
+                                                    log_rule_execution(-1, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao pausar via UI: {e}")
+                                        elif effective_status == "PAUSED":
+                                            if st.button("▶️ Ativar", key=f"activate_{campaign_id}", type="primary", use_container_width=True, help="Ativar esta campanha"):
+                                                try:
+                                                    Campaign(campaign_id).api_update(params={'status': Campaign.Status.active})
+                                                    st.success("Campanha ativada!")
+                                                    log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), True, "Ativado manualmente via UI")
+                                                    # Limpeza de cache após ação manual
+                                                    if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                                    if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
+                                                    if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
+                                                    time.sleep(1.5)
+                                                    st.rerun()
+                                                except Exception as e:
+                                                    st.error(f"Erro ao ativar: {e}")
+                                                    log_rule_execution(-2, campaign_id, 'campaign', campaign.get('name'), False, f"Erro ao ativar via UI: {e}")
+                                        else:
+                                            st.caption("-")
+
+                                # Col 6: Regras Aplicáveis (Execução Manual de Regra)
+                                with cols[6]:
+                                    rules_list_placeholder = st.empty()
+                                    with rules_list_placeholder.container():
+                                        applicable_rules = []
+                                        can_simulate = effective_status in ['ACTIVE', 'PAUSED', 'LIMITED']
+                                        if can_simulate and (daily_budget_cents > 0 or lifetime_budget_cents > 0):
+                                            try:
+                                                active_rules = [r for r in rules if r.get('is_active')]
+                                                applicable_rules = simulate_rule_application(campaign, active_rules)
+                                            except Exception as sim_err: st.caption(f"Erro simulação: {sim_err}")
+
+                                        if applicable_rules:
+                                            for rule_sim in applicable_rules:
+                                                if not isinstance(rule_sim, dict): continue
+                                                rule_id_sim = rule_sim.get('rule_id')
+                                                if not rule_id_sim: continue
+
+                                                rule_action_sim_text = rule_sim.get('action', '')
+                                                enable_apply_button = effective_status == 'ACTIVE' or 'Ativar campanha' in rule_action_sim_text
+
+                                                rule_cols = st.columns([4, 1.5])
+                                                with rule_cols[0]:
+                                                        rule_name_sim = rule_sim.get('rule_name', 'N/A')
+                                                        new_budget_sim = rule_sim.get('new_budget_simulated')
+                                                        budget_sim_text = f" -> R$ {new_budget_sim/100:.2f}" if new_budget_sim is not None else ""
+                                                        st.markdown(f"<small><i>{rule_name_sim} ({rule_action_sim_text}{budget_sim_text})</i></small>", unsafe_allow_html=True)
+
+                                                with rule_cols[1]:
+                                                    if st.button("Aplicar", key=f"apply_{campaign_id}_{rule_id_sim}",
+                                                                help=f"Executar regra '{rule_name_sim}' nesta campanha",
+                                                                use_container_width=True, type="secondary",
+                                                                disabled=not enable_apply_button):
+                                                        st.info(f"Aplicando regra '{rule_name_sim}'...")
+                                                        success_exec, message_exec = execute_rule(campaign_id, rule_id_sim)
+                                                        if success_exec:
+                                                            st.success(f"✅ {message_exec}")
+                                                            st.toast(f"Regra '{rule_name_sim}' aplicada!", icon="🎉")
+                                                            # Limpeza de cache após ação manual
+                                                            if 'get_facebook_campaigns_cached' in globals(): get_facebook_campaigns_cached.clear()
+                                                            if 'get_campaign_insights_cached' in globals(): get_campaign_insights_cached.clear()
+                                                            if 'get_rule_executions_cached' in globals(): get_rule_executions_cached.clear()
+                                                            time.sleep(2)
+                                                            st.rerun()
+                                                        else:
+                                                            st.error(f"❌ {message_exec}")
+                                                            st.toast(f"Falha ao aplicar regra '{rule_name_sim}'!", icon="🔥")
+                                        elif can_simulate:
+                                            st.caption("<div style='text-align: center; font-style: italic; font-size: 0.8em;'>Nenhuma regra ativa aplicável</div>", unsafe_allow_html=True)
+                                        else:
+                                                st.caption("<div style='text-align: center; font-style: italic; font-size: 0.8em;'>-</div>", unsafe_allow_html=True)
+
+                                # Linha divisória entre campanhas
+                                st.markdown("<hr style='margin: 0.3rem 0;'>", unsafe_allow_html=True)
 
 
                     # --- Histórico de Execuções ---
@@ -2259,6 +2584,14 @@ def show_gerenciador_page():
                         # Campos do formulário...
                         name_add = st.text_input("Nome da Conta*")
                         acc_id_add = st.text_input("Account ID* (somente números)")
+                        
+                        # Novos campos: País e Responsável
+                        country_options = ["México", "Chile", "Colômbia", "Espanha", "Portugal", "Itália", "Romênia"]
+                        country_add = st.selectbox("País*", options=country_options)
+                        
+                        manager_options = ["Savio Mendes", "Matheus Silva", "Felipe Said"]
+                        manager_add = st.selectbox("Responsável*", options=manager_options)
+                        
                         app_id_add = st.text_input("App ID*")
                         app_secret_add = st.text_input("App Secret*", type="password")
                         access_token_add = st.text_area("Access Token*", height=100)
@@ -2269,10 +2602,12 @@ def show_gerenciador_page():
 
                         submitted_add = st.form_submit_button("💾 Salvar Nova Conta", type="primary", use_container_width=True)
                         if submitted_add:
-                            if name_add and app_id_add and app_secret_add and access_token_add and acc_id_add:
+                            if name_add and app_id_add and app_secret_add and access_token_add and acc_id_add and country_add and manager_add:
                                 if not acc_id_add.isdigit(): st.error("Account ID deve conter apenas números.")
                                 else:
-                                    if save_api_config(name_add, app_id_add, app_secret_add, access_token_add, acc_id_add, business_id_add, page_id_add, token_expires_at=token_expires_at_add):
+                                    if save_api_config(name_add, app_id_add, app_secret_add, access_token_add, acc_id_add, 
+                                                     business_id_add, page_id_add, token_expires_at=token_expires_at_add,
+                                                     country=country_add, account_manager=manager_add):
                                         st.success(f"Conta '{name_add}' adicionada!")
                                         st.session_state.show_add_config_form = False
                                         if 'get_all_api_configs' in globals(): get_all_api_configs.clear()
@@ -2303,6 +2638,12 @@ def show_gerenciador_page():
                             active_badge = '<span class="success-badge">Ativa</span>' if is_currently_active else ''
                             st.markdown(f"**{config_name}** {active_badge}", unsafe_allow_html=True)
                             st.caption(f"Account ID: `{config.get('account_id', 'N/A')}` | App ID: `{config.get('app_id', 'N/A')}`")
+                            
+                            # Mostrar País e Responsável
+                            country = config.get('country', 'Não definido')
+                            manager = config.get('account_manager', 'Não definido')
+                            st.caption(f"País: {country} | Responsável: {manager}")
+                            
                             # Verificação de expiração do token...
                             expires_date = config.get('token_expires_at')
                             if isinstance(expires_date, date):
